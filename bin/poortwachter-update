@@ -1,0 +1,79 @@
+#!/bin/bash
+# Update Poortwachter to the latest tagged release on GitHub.
+#
+#   poortwachter-update           check, show what's new, ask, install
+#   poortwachter-update --check   only say whether an update is available
+#
+# Run it as yourself, NOT with sudo: the repo is private, so it uses your own
+# GitHub login (gh auth login + gh auth setup-git). It asks for your password
+# only for the install step.
+set -euo pipefail
+
+REPO="${POORTWACHTER_REPO:-https://github.com/emergencepathways/poortwachter.git}"
+CHECK_ONLY=0
+[ "${1:-}" = "--check" ] && CHECK_ONLY=1
+
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Run this without sudo:  poortwachter-update"
+  echo "(It needs your own GitHub login; it asks for sudo itself when it installs.)"
+  exit 1
+fi
+
+installed=$(PYTHONPATH=/opt/poortwachter python3 -c 'import poortwachter; print(poortwachter.__version__)' 2>/dev/null || echo "0")
+
+if ! tags=$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs "$REPO" 'v*' 2>/dev/null); then
+  cat <<MSG
+Couldn't reach the Poortwachter repo on GitHub.
+The repo is private, so this computer needs your GitHub login once:
+
+  sudo apt install gh        # if you don't have it yet
+  gh auth login              # GitHub.com → HTTPS → log in with a web browser
+  gh auth setup-git
+
+Then run poortwachter-update again.
+MSG
+  exit 1
+fi
+
+latest=$(printf '%s\n' "$tags" | sed -n 's#.*refs/tags/v##p' | sort -V | tail -1)
+if [ -z "$latest" ]; then
+  echo "No releases on GitHub yet."
+  exit 1
+fi
+
+newest=$(printf '%s\n%s\n' "$installed" "$latest" | sort -V | tail -1)
+if [ "$installed" = "$latest" ] || [ "$newest" = "$installed" ]; then
+  echo "Poortwachter $installed is up to date."
+  exit 0
+fi
+
+echo "Update available: $installed → $latest"
+[ "$CHECK_ONLY" = 1 ] && exit 0
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+GIT_TERMINAL_PROMPT=0 git -c advice.detachedHead=false clone -q --depth 1 --branch "v$latest" "$REPO" "$TMP/poortwachter"
+
+if [ -f "$TMP/poortwachter/CHANGELOG.md" ]; then
+  echo
+  echo "What's new:"
+  awk -v v="$latest" '
+    $0 ~ "^## \\[?v?"v"[] ]" {show=1; next}
+    show && /^## / {exit}
+    show {print "  " $0}' "$TMP/poortwachter/CHANGELOG.md"
+  echo
+fi
+
+read -r -p "Install $latest now? [Y/n] " answer
+case "${answer:-y}" in
+  [Yy]*) ;;
+  *) echo "Nothing changed."; exit 0 ;;
+esac
+
+# Keep your choice about opening the study app at login.
+ARGS=(--user "$USER")
+[ -f "$HOME/.config/autostart/poortwachter.desktop" ] || ARGS+=(--no-autostart)
+
+cd "$TMP/poortwachter"
+sudo ./install.sh "${ARGS[@]}"
+echo "Updated to $latest. Your roster, history and free days are kept."

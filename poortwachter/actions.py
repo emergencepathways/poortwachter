@@ -209,23 +209,23 @@ def recordings(limit=60):
 
 
 def textbook_target(task_id):
-    """Which exercise this task is about: the next one in the queue, fixed once
+    """Which set this task is about: the next one in the queue, fixed once
     chosen so it doesn't move under you."""
     t = _today_task(task_id)
     prog = t["progress"]
-    if prog.get("exercise_id"):
+    if prog.get("set_id"):
         return prog
     bid = t["params"].get("textbook_id") or db.get_setting("active_textbook")
     if not bid or not textbook.book(bid):
         return {"error": "Upload your textbook PDF in the Textbook tab first."}
-    ex = textbook.next_exercise(bid)
-    if ex:
-        prog.update({"textbook_id": bid, "exercise_id": ex["id"], "label": ex["label"],
-                     "page_from": ex["page_from"], "page_to": ex["page_to"]})
+    s = textbook.next_set(bid)
+    if s:
+        prog.update({"textbook_id": bid, "set_id": s["id"], "title": s["title"], "items": s["items"],
+                     "est_min": s["est_min"]})
         roster.save_progress(task_id, prog)
         return prog
     return {"textbook_id": bid, "free": True,
-            "message": "Your exercise queue is empty: choose the pages yourself."}
+            "message": "Your set queue is empty: choose the pages yourself."}
 
 
 def submit_textbook(task_id, answers, label=None, page_from=None, page_to=None):
@@ -236,33 +236,47 @@ def submit_textbook(task_id, answers, label=None, page_from=None, page_to=None):
     if target.get("error"):
         raise ActionError(target["error"])
     bid = target["textbook_id"]
-    ex_id = target.get("exercise_id")
-    if ex_id:
-        label, page_from, page_to = target["label"], target["page_from"], target["page_to"]
+    set_id = target.get("set_id")
+    if set_id:
+        items, title = target["items"], target["title"]
     else:
         if not page_from:
             raise ActionError("Enter the page(s) of the exercise.")
         page_from = int(page_from)
         page_to = int(page_to or page_from)
-        label = label or f"p. {page_from}"
+        title = label or f"p. {page_from}"
+        items = [{"label": title, "page_from": page_from, "page_to": page_to}]
         # A free-choice exercise must be substantial.
         if len(dutch.words(answers)) < 15:
             raise ActionError("Answer the whole exercise (at least 15 words) before submitting.")
     try:
-        result = textbook.grade(bid, page_from, page_to, label, answers)
+        result = textbook.grade(bid, items, answers, title)
     except textbook.TextbookError as e:
         raise ActionError(str(e)) from None
-    textbook.save_submission(task_id, bid, ex_id, label, page_from, page_to, answers, result)
-    roster.complete(task_id, {"label": label, "score": result.get("score")})
+    textbook.save_submission(task_id, bid, set_id, title, items[0]["page_from"], items[-1]["page_to"],
+                             answers, result)
+    roster.complete(task_id, {"label": title, "score": result.get("score")})
     return result
 
 
-def practice_textbook(book_id, page_from, page_to, label, answers):
-    """Extra textbook practice outside the roster (doesn't count for the lock)."""
+def practice_textbook(book_id, page_from, page_to, label, answers, set_id=None):
+    """Extra textbook practice outside the roster (doesn't count for the lock).
+    Practising a queued set does NOT tick it off the queue."""
+    if set_id:
+        s = textbook.get_set(int(set_id))
+        if not s:
+            raise ActionError("No such set.")
+        items, title = s["items"], s["title"]
+    else:
+        if not page_from:
+            raise ActionError("Enter the page(s) of the exercise.")
+        items = [{"label": label or f"p. {page_from}", "page_from": int(page_from),
+                  "page_to": int(page_to or page_from)}]
+        title = items[0]["label"]
     try:
-        result = textbook.grade(book_id, int(page_from), int(page_to or page_from), label, answers)
+        result = textbook.grade(book_id, items, answers, title)
     except textbook.TextbookError as e:
         raise ActionError(str(e)) from None
-    textbook.save_submission(None, book_id, None, label or "practice", int(page_from),
-                             int(page_to or page_from), answers, result)
+    textbook.save_submission(None, book_id, None, title + " (practice)", items[0]["page_from"],
+                             items[-1]["page_to"], answers, result)
     return result

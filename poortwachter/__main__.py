@@ -51,7 +51,9 @@ def status():
         print("The Poortwachter service isn't running (sudo systemctl status poortwachter).")
         return 1
     if s["unlocked"]:
-        why = "emergency key used" if s["reason"] == "emergency" else "roster complete. Veel plezier!"
+        why = {"emergency": "emergency key used", "emergency_free_day": "emergency key (paid with a free day)",
+               "free_day": "free day. Geniet ervan!", "install_day": "install day, so the lock starts at 02:00",
+               }.get(s["reason"], "roster complete. Veel plezier!")
         print(f"Steam is UNLOCKED ({why}). Resets {s['next_reset'].replace('T', ' ')}.")
     else:
         print(f"Steam is LOCKED: {s['done']}/{s['total']} tasks done, ~{s['minutes_left']} min left.")
@@ -73,7 +75,13 @@ def noodsleutel():
     used = db.connect().execute(
         "SELECT COUNT(*) FROM unlocks WHERE day >= date('now', '-30 days')").fetchone()[0]
     print(f"\nYou still have {st['total'] - st['done']} task(s) left (~{st['minutes_left']} min).")
-    print(f"Emergency keys used in the last 30 days: {used}\n")
+    print(f"Emergency keys used in the last 30 days: {used}")
+    from . import pto
+    b = pto.balance()
+    if b >= 24:
+        print(f"You have {b // 24} banked free day(s): this will use one, and your chain stays intact.\n")
+    else:
+        print(f"No banked free day ({b} h saved): today will count as missed and your hours reset.\n")
     print("To unlock Steam for the rest of today, type this sentence exactly:\n")
     print(f"  {PHRASE}\n")
     try:
@@ -94,10 +102,18 @@ def noodsleutel():
         print("\nCancelled. Steam stays locked. Succes!")
         return 1
     reason = input("\n\nOne line for your log: why today? ").strip() or "(no reason given)"
+    from . import pto
+    if pto.spend_for_emergency(day):
+        db.log("emergency", f"{day}: {reason} (paid with a banked free day)")
+        b = pto.balance()
+        print(f"Steam is unlocked until 02:00. This used 1 banked free day, so your streak and "
+              f"hour chain are safe. Left: {b // 24} days {b % 24} h.")
+        return 0
     db.connect().execute("INSERT OR REPLACE INTO unlocks (day, reason, ts) VALUES (?, ?, ?)",
                          (day, reason, time.time()))
     db.log("emergency", f"{day}: {reason}")
-    print("Steam is unlocked until 02:00. Your unfinished tasks still carry over (up to 2).")
+    print("Steam is unlocked until 02:00. You had no banked free day, so today counts as missed: "
+          "the hours toward your next free day reset, and up to 2 unfinished tasks carry over.")
     return 0
 
 

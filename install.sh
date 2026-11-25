@@ -24,11 +24,12 @@ fi
 USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 [ -d "$USER_HOME" ] || { echo "No home folder for $USER_NAME"; exit 1; }
 
-echo "==> Installing for user: $USER_NAME"
+VERSION=$(PYTHONPATH="$HERE" python3 -c 'import poortwachter; print(poortwachter.__version__)')
+echo "==> Installing Poortwachter $VERSION for user: $USER_NAME"
 
-echo "==> Packages (python3, poppler-utils, qpdf, ffmpeg, libnotify-bin)"
+echo "==> Packages (python3, git, poppler-utils, qpdf, ffmpeg, libnotify-bin)"
 apt-get update -qq || true
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 poppler-utils qpdf ffmpeg libnotify-bin >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 git poppler-utils qpdf ffmpeg libnotify-bin >/dev/null
 
 PYV=$(python3 -c 'import sys; print(sys.version_info >= (3, 8))')
 [ "$PYV" = "True" ] || { echo "Python 3.8 or newer is needed."; exit 1; }
@@ -43,6 +44,7 @@ chown -R root:root /opt/poortwachter
 chmod -R u=rwX,go=rX /opt/poortwachter
 install -m 755 "$HERE/bin/poortwachter" /usr/local/bin/poortwachter
 install -m 755 "$HERE/bin/poortwachter-steam" /usr/local/bin/poortwachter-steam
+install -m 755 "$HERE/bin/poortwachter-update" /usr/local/bin/poortwachter-update
 
 echo "==> Config /etc/poortwachter.conf"
 if [ ! -f /etc/poortwachter.conf ]; then
@@ -93,7 +95,9 @@ for SRC in /usr/share/applications/steam.desktop \
 done
 as_user update-desktop-database "$APPS" 2>/dev/null || true
 
-if [ "$AUTOSTART" = 1 ]; then
+if [ "$AUTOSTART" = 0 ]; then
+  rm -f "$USER_HOME/.config/autostart/poortwachter.desktop"
+else
   as_user mkdir -p "$USER_HOME/.config/autostart"
   install -o "$USER_NAME" -m 644 "$HERE/desktop/poortwachter-autostart.desktop" "$USER_HOME/.config/autostart/poortwachter.desktop"
 fi
@@ -104,6 +108,7 @@ cat <<DONE
 
     Study app:      http://127.0.0.1:7623/   (also "Poortwachter" in the menu)
     Status:         poortwachter status
+    Update:         poortwachter-update   (as yourself, not sudo)
     Emergency key:  sudo poortwachter noodsleutel
     Logs:           journalctl -u poortwachter -f
 

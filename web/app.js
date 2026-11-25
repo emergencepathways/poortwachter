@@ -67,7 +67,7 @@ function kindSummary(t) {
     case 'note': return `${p.min_words}+ words in Dutch`;
     case 'recording': { const s = p.min_seconds || 60; return `Record ${s < 60 ? s + ' s' : Math.round(s / 60 * 10) / 10 + ' min'}`; }
     case 'textbook': return 'Graded by Claude';
-    case 'honor': return 'Honour check-off';
+    case 'honor': return t.source === 'event' ? `Session${p.place ? ' · ' + p.place : ''}. Tick it off afterwards` : 'Honour check-off';
     default: return '';
   }
 }
@@ -91,7 +91,12 @@ function renderLock() {
   const pct = L.total ? Math.round((L.done / L.total) * 100) : 100;
   const reset = L.next_reset.split('T')[1];
   let icon, title, sub;
-  if (L.unlocked && L.reason === 'emergency') {
+  const free = { install_day: ['🎁', 'Install day: Steam is open', `Poortwachter starts locking at ${reset} tonight. Have a look around, and plan the coming days in Plan.`],
+    free_day: ['🏖️', 'Free day: Steam is open', `Paid with 24 saved hours. Geniet ervan! Back to it after ${reset}.`],
+    emergency_free_day: ['🔓', 'Emergency key: paid with a free day', `Your chain is safe. Back to it after ${reset}.`] }[L.reason];
+  if (free) {
+    [icon, title, sub] = free;
+  } else if (L.unlocked && L.reason === 'emergency') {
     icon = '🔓'; title = 'Steam unlocked with the emergency key';
     sub = `${L.done}/${L.total} done. Unfinished tasks carry over (max 2). Resets at ${reset}.`;
   } else if (L.unlocked) {
@@ -109,18 +114,18 @@ function renderLock() {
         <div class="sub">${esc(sub)}</div>
         <div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><span style="width:${pct}%"></span></div>
       </div>
-      <div class="streak"><b>${st.streak}</b>day streak</div>
+      <div class="streak"><b>${st.streak}</b>day streak<br><a href="#plan" title="Free days saved" style="text-decoration:none">🏖️ ${st.pto.days} d ${st.pto.partial_hours} h</a></div>
     </div>`;
 }
 
 // ------------------------------------------------------------------ routing
 
-const VIEWS = { today: viewToday, tomorrow: viewTomorrow, textbook: viewTextbook, library: viewLibrary, history: viewHistory, settings: viewSettings };
+const VIEWS = { today: viewToday, plan: () => viewPlan(), tomorrow: () => viewPlan(), textbook: viewTextbook, library: viewLibrary, history: viewHistory, settings: viewSettings };
 
 async function route() {
   const [name, query] = (location.hash.slice(1) || 'today').split('?');
   S.view = VIEWS[name] ? name : 'today';
-  $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === S.view));
+  $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (S.view === 'tomorrow' ? 'plan' : S.view)));
   const params = new URLSearchParams(query || '');
   if (params.get('bw')) {
     const v = params.get('bw');
@@ -148,6 +153,7 @@ function taskCard(t, { planner = false } = {}) {
     `<span class="chip">~${fmtMin(t.est_min)}</span>`,
   ];
   if (t.source === 'carry') chips.push('<span class="chip carry">carried over</span>');
+  if (t.source === 'event') chips.push(`<span class="chip">📅 session${t.time ? ' ' + esc(t.time) : ''}</span>`);
   if (t.source === 'core') chips.push('<span class="chip">core</span>');
   if (!t.counts) chips.push('<span class="chip bonus">bonus</span>');
   return `
@@ -172,7 +178,8 @@ async function viewToday() {
     <div class="section-title">
       <h1>Vandaag, ${esc(dayNl(D.day))} <small class="muted" style="font-size:.9rem;font-weight:500">${esc(fmtDate(D.day))}</small></h1>
     </div>
-    ${allDone ? `<div class="card" style="text-align:center"><div class="celebrate">🎉</div><h2>Alles af! Steam is open.</h2><p class="muted">Add a bonus task below if you're on a roll. Tomorrow's plan is ready in the Tomorrow tab.</p></div>` : ''}
+    ${['install_day', 'free_day', 'emergency_free_day'].includes(S.state.lock.reason) ? `<div class="card" style="text-align:center"><div class="celebrate">${S.state.lock.reason === 'install_day' ? '🎁' : '🏖️'}</div><h2>${S.state.lock.reason === 'install_day' ? 'Welkom! Today is on the house.' : 'Vrije dag!'}</h2><p class="muted">${S.state.lock.reason === 'install_day' ? 'The lock starts at 02:00. Set things up now: Settings → Textbook → Library → Plan.' : 'Nothing is required today. Anything you do is a bonus.'}</p></div>` : ''}
+    ${allDone ? `<div class="card" style="text-align:center"><div class="celebrate">🎉</div><h2>Alles af! Steam is open.</h2><p class="muted">Add a bonus task below if you're on a roll. The coming days are in the Plan tab.</p></div>` : ''}
     <div class="section-title"><h2>Before Steam opens</h2><span class="muted">${gating.length - todo.length}/${gating.length} done</span></div>
     ${gating.length ? `<div class="tasks">${gating.map((t) => taskCard(t)).join('')}</div>` : '<div class="empty">Nothing planned today, so Steam is open.</div>'}
     <div class="section-title"><h2>Bonus practice</h2><span class="muted">doesn't affect Steam</span></div>
@@ -183,7 +190,7 @@ async function viewToday() {
         <button class="ghost" id="add-bonus">+ Add as bonus</button>
         <button class="ghost" id="add-today" title="Adds to today's required tasks. You can only make today harder.">+ Add as required</button>
       </div>
-      <p class="hint">Today's plan is locked in. You can add tasks to it but not remove them. Plan changes go in the Tomorrow tab.</p>
+      <p class="hint">Today's plan is locked in. You can add tasks to it but not remove them. Changes to the coming days go in the Plan tab.</p>
     </div>`;
   await loadActivities();
   $('#bonus-act').innerHTML = S.activities.filter((a) => a.enabled).map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
@@ -352,6 +359,7 @@ function panelNote(t) {
 function panelHonor(t) {
   const p = t.params;
   openPanel(`${panelHead(t)}
+    ${t.source === 'event' ? `<p class="muted">📅 ${t.time ? esc(t.time) + ' · ' : ''}${fmtMin(t.est_min)}${p.place ? ' · ' + esc(p.place) : ''}. Tick it off after the session.</p>` : ''}
     <div class="card">
       ${p.link ? `<label for="link">Lesson link (optional)</label><input type="url" id="link" placeholder="https://www.italki.com/…">` : ''}
       <label for="note">${esc(p.label || 'What did you do?')}</label>
@@ -445,17 +453,24 @@ async function panelTextbook(t) {
   studyView({ book, task: t, target });
 }
 
-function studyView({ book, task = null, target = {}, practice = false }) {
-  const free = practice || target.free;
+function answerTemplate(items) {
+  return items.map((it) => `## ${it.label}\n1. \n2. \n3. \n`).join('\n');
+}
+
+function studyView({ book, task = null, target = {}, practice = false, set = null }) {
+  const items = set ? set.items : (target.items || []);
+  const title = set ? set.title : target.title;
+  const free = !items.length;
   const off = book.page_offset || 0;
-  const startPage = target.page_from || 1;
-  const draftKey = task ? `pw-tb-${task.id}` : `pw-tb-practice-${book.id}`;
+  const startPage = items.length ? items[0].page_from : 1;
+  const draftKey = task ? `pw-tb-${task.id}` : `pw-tb-practice-${book.id}-${set ? set.id : 'free'}`;
+  const pdfSrc = (p) => `/files/textbook/${book.id}.pdf#page=${p + off}&zoom=page-width`;
   openPanel(`
     <div class="study">
-      <iframe id="pdf" title="Textbook" src="/files/textbook/${book.id}.pdf#page=${startPage + off}&zoom=page-width"></iframe>
+      <iframe id="pdf" title="Textbook" src="${pdfSrc(startPage)}"></iframe>
       <div class="side">
         <p class="muted" style="margin:0">📘 ${esc(book.name)}${practice ? ' · practice (doesn\'t count)' : ''}</p>
-        <h1 id="panel-title">${free ? 'Choose an exercise' : esc(target.label)}</h1>
+        <h1 id="panel-title">${free ? 'Choose an exercise' : esc(title)}</h1>
         ${free ? `
           ${target.message ? `<p class="muted">${esc(target.message)}</p>` : ''}
           <div class="row">
@@ -464,26 +479,39 @@ function studyView({ book, task = null, target = {}, practice = false }) {
             <div style="flex:1"><label for="tb-to">to</label><input type="number" id="tb-to" min="1" placeholder="(same)"></div>
           </div>
           <button class="small ghost" id="tb-go" style="margin-top:8px">Show page</button>`
-        : `<p class="muted">Printed page ${target.page_from}${target.page_to !== target.page_from ? '–' + target.page_to : ''}</p>`}
+        : `<div class="tb-items">${items.map((it, i) => `
+            <button class="tb-item ${i === 0 ? 'active' : ''}" data-page="${it.page_from}">
+              <span>${it.review ? '🔁 ' : ''}${esc(it.label)}</span>
+              <small>p. ${it.page_from}${it.page_to !== it.page_from ? '–' + it.page_to : ''} · ~${it.minutes} min</small>
+              ${it.note ? `<small class="tb-note">${esc(it.note)}</small>` : ''}
+            </button>`).join('')}</div>
+          <p class="hint">Click an exercise to jump to its page. 🔁 = review from an earlier chapter.</p>`}
         <label for="answers">Your answers</label>
-        <textarea id="answers" class="answers" lang="nl" spellcheck="false" placeholder="1. …&#10;2. …&#10;3. …&#10;&#10;Number your answers the way the book does."></textarea>
+        <textarea id="answers" class="answers" lang="nl" spellcheck="false" placeholder="1. …&#10;2. …&#10;&#10;Number your answers the way the book does."></textarea>
         <div class="wordcount" id="wc"></div>
         <button class="big warm" id="grade">Submit for grading</button>
-        <p class="hint">Only these pages and your answers go to Claude, using your own API key.</p>
+        <p class="hint">Only these pages and your answers go to Claude, using your own API key. Grading takes up to a minute.</p>
         <div id="results"></div>
       </div>
     </div>`, { wide: true });
   const ta = $('#answers');
-  try { ta.value = localStorage.getItem(draftKey) || ''; } catch { /* */ }
-  const upd = () => { $('#wc').textContent = `${ta.value.split('\n').filter((l) => l.trim()).length} lines · ${wordCount(ta.value)} words`; try { localStorage.setItem(draftKey, ta.value); } catch { /* */ } };
+  let draft = null;
+  try { draft = localStorage.getItem(draftKey); } catch { /* */ }
+  ta.value = draft || (items.length ? answerTemplate(items) : '');
+  const upd = () => { $('#wc').textContent = `${wordCount(ta.value)} words`; try { localStorage.setItem(draftKey, ta.value); } catch { /* */ } };
   ta.oninput = upd; upd();
-  if ($('#tb-go')) $('#tb-go').onclick = () => { const p = +$('#tb-from').value || 1; $('#pdf').src = `/files/textbook/${book.id}.pdf#page=${p + off}&zoom=page-width`; };
+  $$('.tb-item').forEach((b) => (b.onclick = () => {
+    $$('.tb-item').forEach((x) => x.classList.remove('active')); b.classList.add('active');
+    $('#pdf').src = pdfSrc(+b.dataset.page);
+  }));
+  if ($('#tb-go')) $('#tb-go').onclick = () => { $('#pdf').src = pdfSrc(+$('#tb-from').value || 1); };
   $('#grade').onclick = (e) => guard(async () => {
     const body = { answers: ta.value };
     if (free) {
       body.label = $('#tb-label').value; body.page_from = +$('#tb-from').value; body.page_to = +$('#tb-to').value || body.page_from;
       if (!body.page_from) throw new Error('Enter the page number of the exercise.');
     }
+    if (set) body.set_id = set.id;
     $('#results').innerHTML = '<div class="card muted">Claude is grading… (this takes 15–60 seconds)</div>';
     let r;
     try {
@@ -505,10 +533,11 @@ function renderResult(r) {
       <div class="spread"><div><div class="score">${sc.correct ?? '?'} / ${sc.total ?? items.length}</div><div class="muted">correct</div></div>
       <div style="flex:1;min-width:200px"><p>${esc(r.summary || '')}</p>${r.summary_nl ? `<p lang="nl"><i>${esc(r.summary_nl)}</i></p>` : ''}</div></div>
       ${r.exercise_found === false ? '<p class="err">Claude couldn\'t find the exercise on those pages. Check the page offset in the Textbook tab.</p>' : ''}
+      ${(r.missing || []).length ? `<p class="err">No answers found for: ${r.missing.map(esc).join(', ')}</p>` : ''}
     </div>
     ${items.map((i) => `
       <div class="result-item ${i.correct ? '' : 'wrong'}">
-        <div class="q">${esc(i.number)}. ${esc(i.question || '')}</div>
+        <div class="q">${i.exercise ? esc(i.exercise) + ' · ' : ''}${esc(i.number)}. ${esc(i.question || '')}</div>
         <div>${i.correct ? '✓' : '✗'} <span ${i.correct ? '' : 'style="text-decoration:line-through;opacity:.75"'}>${esc(i.answer || '')}</span></div>
         ${!i.correct || (i.corrected && i.corrected !== i.answer) ? `<div class="fix" lang="nl">→ ${esc(i.corrected || '')}</div>` : ''}
         <dl>
@@ -519,60 +548,155 @@ function renderResult(r) {
       </div>`).join('')}`;
 }
 
-// ------------------------------------------------------------------ TOMORROW
+// ------------------------------------------------------------------ PLAN (a week ahead)
 
-async function viewTomorrow() {
+const fmtHours = (h) => `${Math.floor(h / 24)} d ${h % 24} h`;
+const shortDay = (iso) => { const d = new Date(iso + 'T12:00'); return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }); };
+
+async function viewPlan(selected) {
   await Promise.all([loadState(), loadActivities()]);
-  const D = S.state.tomorrow;
+  const week = S.state.week;
+  const day = selected && week.some((w) => w.day === selected) ? selected : (S.planDay && week.some((w) => w.day === S.planDay) ? S.planDay : week[0].day);
+  S.planDay = day;
+  const [D, sess] = await Promise.all([api(`/api/day/${day}`), api('/api/sessions')]);
+  const P = S.state.pto;
   const over = D.planned_minutes - D.budget;
-  const rows = D.tasks.filter((t) => t.counts).map((t) => {
+  const caps = D.caps || {};
+  const capLine = Object.entries(caps).map(([c, cap]) => {
+    const m = D.category_minutes[c] || 0;
+    return `<span class="chip ${m >= cap ? 'carry' : ''}">${CAT_ICON[c] || ''} ${esc(CAT_LABEL[c] || c)} ${m}/${cap} min</span>`;
+  }).join(' ');
+  const rows = D.tasks.filter((t) => t.counts || t.source === 'event').map((t) => {
     const mystery = t.kind === 'mystery';
+    const isSession = t.source === 'event';
+    const p = t.params || {};
     return `<div class="plan-row" style="${catVar(t.category)}">
-      <div><div class="name">${mystery ? '❓ Mystery task' : esc(t.name)}</div>
-        <div class="muted" style="font-size:.85rem">${mystery ? 'Hidden until you start it' : esc(CAT_LABEL[t.category]) + ' · ' + esc(kindSummary(t))} · ~${fmtMin(t.est_min)}${t.source === 'core' ? ' · core' : ''}</div></div>
+      <div><div class="name">${isSession ? '📅 ' : ''}${mystery ? '❓ Mystery task' : esc(t.name)}${isSession && t.time ? ` <span class="muted" style="font-weight:500">${esc(t.time)}</span>` : ''}</div>
+        <div class="muted" style="font-size:.85rem">${mystery ? 'Hidden until you start it' : isSession ? `Session${p.place ? ' · ' + esc(p.place) : ''}` : esc(CAT_LABEL[t.category]) + ' · ' + esc(kindSummary(t))} · ~${fmtMin(t.est_min)}${t.source === 'core' ? ' · core' : ''}${!t.counts ? ' · not required (free day)' : ''}</div></div>
       <div class="tools">
+        ${isSession ? `<button class="small ghost" data-skip="${t.event_id}" title="Not happening this time">Skip this one</button>` : `
         ${!mystery && t.source !== 'core' ? `<button class="small ghost" data-swap="${t.id}" title="Swap for another random activity">↻ Swap</button>` : ''}
-        ${!mystery ? `<button class="small ghost" data-myst="${t.id}" title="Hide it until tomorrow">❓ Hide</button>` : ''}
-        <button class="small danger" data-rm="${t.id}" title="Remove">✕</button>
+        ${!mystery ? `<button class="small ghost" data-myst="${t.id}" title="Hide it until the day">❓ Hide</button>` : ''}
+        <button class="small danger" data-rm="${t.id}" title="Remove">✕</button>`}
       </div></div>`;
   }).join('');
+  const weekly = sess.sessions.filter((e) => e.weekday !== null);
+  const oneoff = sess.sessions.filter((e) => e.date);
   $('#view').innerHTML = `
-    <div class="section-title"><h1>Morgen, ${esc(dayNl(D.day))} <small class="muted" style="font-size:.9rem;font-weight:500">${esc(fmtDate(D.day))}</small></h1></div>
+    <div class="section-title"><h1>Plan</h1><span class="muted">Today is fixed. Plan up to ${week.length} days ahead.</span></div>
+    <div class="weekstrip">${week.map((w) => `
+      <button class="wday ${w.day === day ? 'active' : ''} ${w.free ? 'free' : ''}" data-day="${w.day}">
+        <b>${esc(dayNl(w.day))}</b><small>${esc(w.day.slice(8))}-${esc(w.day.slice(5, 7))}</small>
+        <span>${w.free ? '🏖️ free' : `${w.planned_minutes}/${w.budget} min`}</span>
+        ${w.sessions ? `<span class="dot">📅 ${w.sessions}</span>` : ''}
+      </button>`).join('')}</div>
     <div class="grid2">
       <div>
+        <div class="section-title" style="margin-top:6px"><h2>${esc(fmtDate(day))}</h2></div>
+        ${D.free ? `<div class="card" style="border-left:6px solid var(--good)"><h3>🏖️ Free day</h3><p class="muted">Nothing is required, so Steam is open all day. Sessions still show up as reminders.</p>
+          ${D.free === 'planned' ? '<button class="ghost small" id="cancel-free">Cancel free day (refunds 24 h)</button>' : ''}</div>` : `
         <div class="card">
           <div class="spread"><b>Planned: ${fmtMin(D.planned_minutes)}</b><span class="muted">budget ${fmtMin(D.budget)}</span></div>
           <div class="bar"><span style="width:${Math.min(100, D.planned_minutes / Math.max(D.budget, 1) * 100)}%"></span></div>
-          <p class="hint">${over > 0 ? `${fmtMin(over)} over budget. That's allowed; you're the boss of tomorrow.` : over < -10 ? `${fmtMin(-over)} under budget.` : 'Right on budget.'} Up to 2 unfinished tasks from today will be added at 02:00.</p>
-        </div>
-        ${rows || '<div class="empty">Nothing planned. Tomorrow Steam would be open all day.</div>'}
+          <p class="hint">${D.sessions.reduce((a, t) => a + t.est_min, 0) >= D.budget ? `Sessions take up this day, so only the minimum task is required besides them.` : over > 0 ? `${fmtMin(over)} over budget. That's allowed.` : over < -10 ? `${fmtMin(-over)} under budget.` : 'Right on budget.'}${day === week[0].day ? ' Up to 2 unfinished tasks from today will be added at 02:00.' : ''}</p>
+          <div class="row">${capLine}</div>
+        </div>`}
+        ${rows || '<div class="empty">Nothing planned. Steam would be open all day.</div>'}
+        ${D.free ? '' : `
+        <div class="card" style="margin-top:12px">
+          <h3>Add to this day</h3>
+          <div class="row"><select id="add-act" style="flex:1">${S.activities.filter((a) => a.enabled).map((a) => `<option value="${a.id}">${esc(a.name)} (~${a.est_min} min)</option>`).join('')}</select>
+          <button id="add">Add</button></div>
+          <div class="row" style="margin-top:10px"><select id="myst-cat" style="flex:1"><option value="">Any category</option>${S.state.categories.map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
+          <button class="warm" id="add-myst">+ ❓ Surprise me</button></div>
+          <hr>
+          <div class="row"><button class="ghost" id="regen">↻ Redraw this day</button>
+          <button class="ghost" id="take-free" ${P.hours < 24 ? 'disabled title="You need 24 saved hours"' : ''}>🏖️ Take this day off (−24 h)</button></div>
+        </div>`}
       </div>
       <div>
         <div class="card">
-          <h2>Add to tomorrow</h2>
-          <label for="add-act">Pick an activity</label>
-          <div class="row"><select id="add-act" style="flex:1">${S.activities.filter((a) => a.enabled).map((a) => `<option value="${a.id}">${esc(a.name)} (~${a.est_min} min)</option>`).join('')}</select>
-          <button id="add">Add</button></div>
-          <hr>
-          <h3>Surprise me ❓</h3>
-          <p class="muted">Adds a random activity you won't see until you start it tomorrow.</p>
-          <div class="row"><select id="myst-cat" style="flex:1"><option value="">Any category</option>${S.state.categories.map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select>
-          <button class="warm" id="add-myst">+ Mystery task</button></div>
-          <hr>
-          <h3>Start over</h3>
-          <p class="muted">Redraw tomorrow from your weekly plan (Library → Weekly plan).</p>
-          <button class="ghost" id="regen">↻ Redraw tomorrow</button>
+          <h2>📅 Sessions</h2>
+          <p class="muted">italki lessons, library group study, taalcafés. Their minutes count toward the day's budget. If a session fills the whole budget, only "${esc((S.activities.find((a) => a.id === S.state.event_minimum) || {}).name || 'the minimum task')}" is still required.</p>
+          <div class="row">
+            <button class="small" data-quick="italki">+ italki lesson on ${esc(dayNl(day))}</button>
+            <button class="small ghost" data-newsess="1">+ Other session…</button>
+          </div>
+          ${weekly.length ? `<h3 style="margin-top:14px">Every week</h3>${weekly.map((e) => `<div class="plan-row" style="--cat: var(--c-${e.category})"><div><div class="name">${esc(e.name)}</div>
+            <div class="muted" style="font-size:.85rem">${WEEKDAYS[e.weekday]}s${e.time ? ' ' + esc(e.time) : ''} · ${e.minutes} min${e.place ? ' · ' + esc(e.place) : ''}${e.end_date ? ' · until ' + esc(e.end_date) : ''}</div></div>
+            <div class="tools"><button class="small ghost" data-editsess="${e.id}">Edit</button><button class="small danger" data-endsess="${e.id}">End</button></div></div>`).join('')}` : ''}
+          ${oneoff.length ? `<h3 style="margin-top:14px">Dates</h3>${oneoff.map((e) => `<div class="plan-row" style="--cat: var(--c-${e.category})"><div><div class="name">${esc(e.name)}</div>
+            <div class="muted" style="font-size:.85rem">${esc(shortDay(e.date))}${e.time ? ' ' + esc(e.time) : ''} · ${e.minutes} min${e.place ? ' · ' + esc(e.place) : ''}</div></div>
+            <div class="tools"><button class="small ghost" data-editsess="${e.id}">Edit</button><button class="small danger" data-endsess="${e.id}">✕</button></div></div>`).join('')}` : ''}
+          ${!weekly.length && !oneoff.length ? '<p class="muted" style="margin-top:10px">No sessions yet.</p>' : ''}
         </div>
-        <div class="card"><p class="muted" style="margin:0"><b>Why can't I edit today?</b> So the plan you made yesterday holds. You can still add tasks to today, just not take them away.</p></div>
+        <div class="card">
+          <h2>🏖️ Free days</h2>
+          <div class="spread"><div><div class="score">${P.days} d <span style="font-size:1.1rem">${P.partial_hours} h</span></div><div class="muted">saved · cap ${P.cap_days} days${P.at_cap ? ' (reached: nothing more accrues)' : ''}</div></div>
+          <div style="flex:1;min-width:180px"><div class="bar"><span style="width:${P.partial_hours / 24 * 100}%"></span></div><p class="hint">${24 - P.partial_hours} more completed day(s) until the next free day.</p></div></div>
+          <p class="muted" style="font-size:.88rem">Each completed day earns 1 hour, and 24 hours = 1 free day. A missed day wipes the hours toward the next one (banked days stay). Free days don't break the chain. The emergency key uses a banked day first.</p>
+          ${P.upcoming.length ? `<p><b>Planned:</b> ${P.upcoming.map((f) => esc(shortDay(f.day))).join(', ')}</p>` : ''}
+          <details><summary>History</summary><table><tbody>${P.ledger.map((l) => `<tr><td><small>${esc(l.day)}</small></td><td style="white-space:nowrap">${l.hours > 0 ? '+' : ''}${l.hours} h</td><td><small>${esc(l.reason)}</small></td></tr>`).join('') || '<tr><td class="muted">Nothing yet.</td></tr>'}</tbody></table></details>
+        </div>
       </div>
     </div>`;
-  const day = D.day;
-  $$('[data-swap]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.swap}/swap`); viewTomorrow(); }, b)));
-  $$('[data-myst]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.myst}/mystify`); viewTomorrow(); }, b)));
-  $$('[data-rm]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.rm}/remove`); viewTomorrow(); }, b)));
-  $('#add').onclick = (e) => guard(async () => { await post(`/api/day/${day}/add`, { activity_id: +$('#add-act').value }); viewTomorrow(); }, e.target);
-  $('#add-myst').onclick = (e) => guard(async () => { await post(`/api/day/${day}/mystery`, { category: $('#myst-cat').value }); viewTomorrow(); }, e.target);
-  $('#regen').onclick = (e) => guard(async () => { if (!confirm('Redraw tomorrow? Your edits to it will be lost.')) return; await post(`/api/day/${day}/regenerate`); viewTomorrow(); }, e.target);
+  const again = () => viewPlan(day);
+  $$('[data-day]').forEach((b) => (b.onclick = () => viewPlan(b.dataset.day)));
+  $$('[data-swap]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.swap}/swap`); again(); }, b)));
+  $$('[data-myst]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.myst}/mystify`); again(); }, b)));
+  $$('[data-rm]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.rm}/remove`); again(); }, b)));
+  $$('[data-skip]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/sessions/${b.dataset.skip}/skip`, { day }); again(); }, b)));
+  $$('[data-endsess]').forEach((b) => (b.onclick = () => guard(async () => { if (!confirm('End this session? Weekly sessions stop from tomorrow; dates are removed.')) return; await post(`/api/sessions/${b.dataset.endsess}/end`); again(); }, b)));
+  $$('[data-editsess]').forEach((b) => (b.onclick = () => editSession(sess.sessions.find((e) => e.id === +b.dataset.editsess), sess.presets, day)));
+  $$('[data-newsess]').forEach((b) => (b.onclick = () => editSession(null, sess.presets, day)));
+  $$('[data-quick]').forEach((b) => (b.onclick = () => editSession({ kind: 'italki', date: day, ...sess.presets.italki, weekday: null }, sess.presets, day, true)));
+  if ($('#add')) $('#add').onclick = (e) => guard(async () => { await post(`/api/day/${day}/add`, { activity_id: +$('#add-act').value }); again(); }, e.target);
+  if ($('#add-myst')) $('#add-myst').onclick = (e) => guard(async () => { await post(`/api/day/${day}/mystery`, { category: $('#myst-cat').value }); again(); }, e.target);
+  if ($('#regen')) $('#regen').onclick = (e) => guard(async () => { if (!confirm('Redraw this day? Your edits to it will be lost (sessions stay).')) return; await post(`/api/day/${day}/regenerate`); again(); }, e.target);
+  if ($('#take-free')) $('#take-free').onclick = (e) => guard(async () => { if (!confirm(`Take ${fmtDate(day)} off? This uses 24 saved hours.`)) return; await post('/api/pto/free', { day }); toast('Enjoy your free day!'); again(); }, e.target);
+  if ($('#cancel-free')) $('#cancel-free').onclick = (e) => guard(async () => { await post('/api/pto/cancel', { day }); again(); }, e.target);
+}
+
+function editSession(e, presets, day, isNew = false) {
+  isNew = isNew || !e || !e.id;
+  e = e || { kind: 'library', ...presets.library, weekday: null, date: day, time: '', place: '' };
+  const repeat = e.weekday !== null && e.weekday !== undefined ? 'weekly' : 'date';
+  openPanel(`
+    <h1 id="panel-title">${isNew ? 'New session' : 'Edit session'}</h1>
+    <label for="s-kind">Type</label>
+    <select id="s-kind">${Object.entries(presets).map(([k, v]) => `<option value="${k}" ${k === e.kind ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
+    <label for="s-name">Name</label><input type="text" id="s-name" value="${esc(e.name)}">
+    <div class="row">
+      <div style="flex:1"><label for="s-min">Minutes</label><input type="number" id="s-min" min="5" max="600" step="5" value="${e.minutes}"></div>
+      <div style="flex:1"><label for="s-time">Start time</label><input type="text" id="s-time" placeholder="19:00" value="${esc(e.time || '')}"></div>
+    </div>
+    <label for="s-place">Place / link (optional)</label><input type="text" id="s-place" value="${esc(e.place || '')}" placeholder="Centrale Bibliotheek, Spui 68">
+    <label>Repeats</label>
+    <div class="row"><label class="inline"><input type="radio" name="rep" value="date" ${repeat === 'date' ? 'checked' : ''}> On a date</label>
+    <label class="inline"><input type="radio" name="rep" value="weekly" ${repeat === 'weekly' ? 'checked' : ''}> Every week</label></div>
+    <div id="rep-date"><label for="s-date">Date</label><input type="date" id="s-date" value="${esc(e.date || day)}"></div>
+    <div id="rep-week">
+      <label for="s-wd">Weekday</label><select id="s-wd">${WEEKDAYS.map((w, i) => `<option value="${i}" ${i === e.weekday ? 'selected' : ''}>${w}</option>`).join('')}</select>
+      <div class="row"><div style="flex:1"><label for="s-from">From</label><input type="date" id="s-from" value="${esc(e.start_date || '')}"></div>
+      <div style="flex:1"><label for="s-to">Until (optional)</label><input type="date" id="s-to" value="${esc(e.end_date || '')}"></div></div>
+    </div>
+    <label class="inline" style="margin-top:14px"><input type="checkbox" id="s-link" ${e.link ? 'checked' : ''}> Ask for a link when ticking it off (italki lesson page)</label>
+    <div class="row" style="margin-top:18px"><button class="big" id="s-save">Save</button></div>
+    <p class="hint">Afterwards you tick it off on the day with a short note: what you practised, who you talked to. It's honour-based.</p>`);
+  const showRep = () => { const w = $('input[name=rep]:checked').value === 'weekly'; $('#rep-week').hidden = !w; $('#rep-date').hidden = w; };
+  $$('input[name=rep]').forEach((r) => (r.onchange = showRep)); showRep();
+  $('#s-kind').onchange = () => { const p = presets[$('#s-kind').value]; $('#s-name').value = p.name; $('#s-min').value = p.minutes; $('#s-link').checked = !!p.link; };
+  $('#s-save').onclick = (ev) => guard(async () => {
+    const weekly = $('input[name=rep]:checked').value === 'weekly';
+    const body = {
+      kind: $('#s-kind').value, name: $('#s-name').value, minutes: +$('#s-min').value, time: $('#s-time').value,
+      place: $('#s-place').value, link: $('#s-link').checked,
+      date: weekly ? null : $('#s-date').value, weekday: weekly ? +$('#s-wd').value : null,
+      start_date: weekly ? $('#s-from').value || null : null, end_date: weekly ? $('#s-to').value || null : null,
+    };
+    await post(isNew ? '/api/sessions' : `/api/sessions/${e.id}`, body);
+    toast('Session saved.'); closePanel(true); viewPlan(day);
+  }, ev.target);
 }
 
 // ------------------------------------------------------------------ LIBRARY (activities + weekly plan)
@@ -637,7 +761,7 @@ async function viewLibrary() {
       };
     });
     await post('/api/settings', { schedule });
-    toast('Weekly plan saved. Tomorrow has been redrawn (unless you edited it).');
+    toast('Weekly plan saved. The coming days have been redrawn (except days you edited by hand).');
   }, e.target);
   $('#new-act').onclick = () => editActivity(null);
   $$('[data-edit]').forEach((b) => (b.onclick = () => editActivity(acts.find((a) => a.id === +b.dataset.edit))));
@@ -712,33 +836,49 @@ async function editActivity(a) {
 async function viewTextbook() {
   await loadBooks();
   const { books, active } = S.books;
+  const cap = ((await loadSettings()).category_caps || {}).textbook;
   $('#view').innerHTML = `
     <div class="section-title"><h1>Textbook</h1></div>
     <div class="grid2">
       <div>
-        ${books.map((b) => `
+        ${books.map((b) => {
+          const open = b.sets.filter((x) => !x.done);
+          const done = b.sets.length - open.length;
+          return `
           <div class="card">
             <div class="spread"><h2 style="margin:0">📘 ${esc(b.name)}</h2>${b.id === active ? '<span class="chip bonus">active</span>' : `<button class="small ghost" data-act="${b.id}">Make active</button>`}</div>
-            <p class="muted">${b.pages || '?'} PDF pages</p>
+            <p class="muted">${b.pages || '?'} PDF pages · ${b.sets.length} sets, ${done} done</p>
             <label>Page offset</label>
             <div class="row"><input type="number" style="max-width:110px" value="${b.page_offset}" data-off="${b.id}"><button class="small ghost" data-saveoff="${b.id}">Save</button></div>
-            <p class="hint">If printed page 1 is page 15 of the PDF, the offset is 14. Exercises use printed page numbers.</p>
-            <div class="row" style="margin-top:8px"><button class="small" data-practice="${b.id}">Open study view (practice)</button><button class="small danger" data-delbook="${b.id}">Remove PDF</button></div>
+            <p class="hint">If printed page 1 is page 15 of the PDF, the offset is 14. Sets use printed page numbers.</p>
+            <div class="row" style="margin-top:8px"><button class="small" data-practice="${b.id}">Practise any pages</button><button class="small danger" data-delbook="${b.id}">Remove PDF</button></div>
             <hr>
-            <h3>Exercise queue</h3>
-            <p class="muted">"Textbook — next exercise" tasks work through this list in order.</p>
-            ${b.exercises.length ? `<table><thead><tr><th>Exercise</th><th>Pages</th><th></th></tr></thead><tbody>${b.exercises.map((x) => `
-              <tr style="${x.done ? 'opacity:.55' : ''}"><td>${x.done ? '✓ ' : ''}${esc(x.label)}</td><td>${x.page_from}${x.page_to !== x.page_from ? '–' + x.page_to : ''}</td>
-              <td style="white-space:nowrap">${x.done ? `<button class="small ghost" data-exreset="${x.id}">Redo</button>` : ''}<button class="small danger" data-exdel="${x.id}">✕</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted">Empty. Add exercises below.</p>'}
-            <label>Add exercises, one per line: <code>label; page</code> or <code>label; from-to</code></label>
-            <textarea data-exadd="${b.id}" style="min-height:110px" placeholder="H5 Oefening 1; 84&#10;H5 Oefening 2; 84-85&#10;H5 Oefening 3; 86"></textarea>
-            <button class="small" data-exsave="${b.id}" style="margin-top:6px">Add to queue</button>
-          </div>`).join('') || '<div class="card empty">No textbook yet. Upload your PDF.</div>'}
+            <div class="spread"><h3 style="margin:0">Set queue</h3>${open.length ? `<button class="small danger" data-clear="${b.id}">Clear open sets</button>` : ''}</div>
+            <p class="muted">"Textbook — next exercise" tasks work through these in order, one set per day${cap ? `, max ${cap} min` : ''}.</p>
+            ${b.sets.length ? `<div class="setlist">${b.sets.map((x, i) => `
+              <details class="setrow ${x.done ? 'done' : ''}" ${!x.done && x === open[0] ? 'open' : ''}>
+                <summary><span>${x.done ? '✓' : `#${i + 1}`}</span> <b>${esc(x.title)}</b> <small>~${x.est_min} min${cap && x.est_min > cap ? ' ⚠️ over the daily limit' : ''}</small></summary>
+                <ul>${x.items.map((it) => `<li>${it.review ? '🔁 ' : ''}${esc(it.label)} <small>p. ${it.page_from}${it.page_to !== it.page_from ? '–' + it.page_to : ''} · ${it.minutes} min</small></li>`).join('')}</ul>
+                <div class="row">${x.done ? `<button class="small ghost" data-setreset="${x.id}">Redo</button>` : `<button class="small ghost" data-setpractice="${x.id}" data-book="${b.id}">Practise now</button>`}<button class="small danger" data-setdel="${x.id}">Delete</button></div>
+              </details>`).join('')}</div>` : '<p class="muted">Empty. Import a sets file or add lines below.</p>'}
+            <hr>
+            <h3>Import a sets file</h3>
+            <p class="muted">A <code>.json</code> sets file (like the one Claude builds from your PDF).</p>
+            <input type="file" accept=".json,application/json" data-import="${b.id}">
+            <label class="inline" style="margin-top:8px"><input type="checkbox" data-replace="${b.id}" checked> Replace the open (not yet done) sets</label>
+            <div><button class="small" data-doimport="${b.id}" style="margin-top:8px">Import</button></div>
+            <details style="margin-top:14px"><summary>…or type sets by hand</summary>
+              <p class="hint">One set per line: <code>label; pages; minutes</code>, e.g. <code>H5 Oefening 3; 84-85; 20</code></p>
+              <textarea data-lines="${b.id}" style="min-height:100px" placeholder="H5 Oefening 1; 84; 15&#10;H5 Oefening 2; 84-85; 20"></textarea>
+              <button class="small" data-addlines="${b.id}" style="margin-top:6px">Add to queue</button>
+            </details>
+          </div>`;
+        }).join('') || '<div class="card empty">No textbook yet. Upload your PDF.</div>'}
       </div>
       <div>
         <div class="card">
           <h2>Upload a textbook PDF</h2>
-          <p class="muted">It's stored in Poortwachter's private folder on this computer. Only the pages of an exercise you submit are sent to Claude for grading.</p>
+          <p class="muted">It's stored in Poortwachter's private folder on this computer. Only the pages of a set you submit are sent to Claude for grading.</p>
           <label for="up-name">Name</label><input type="text" id="up-name" placeholder="e.g. Home in on Holland">
           <label for="up-file">PDF file</label><input type="file" id="up-file" accept="application/pdf">
           <button id="up" style="margin-top:12px">Upload</button>
@@ -747,17 +887,30 @@ async function viewTextbook() {
         <div class="card"><h2>Recent grading</h2><div id="subs" class="muted">Laden…</div></div>
       </div>
     </div>`;
+  const findBook = (id) => books.find((x) => x.id === +id);
   $$('[data-act]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/textbooks/${b.dataset.act}/activate`); viewTextbook(); }, b)));
   $$('[data-saveoff]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/textbooks/${b.dataset.saveoff}/offset`, { offset: +$(`[data-off="${b.dataset.saveoff}"]`).value }); toast('Offset saved.'); }, b)));
-  $$('[data-delbook]').forEach((b) => (b.onclick = () => guard(async () => { if (!confirm('Remove this PDF and its exercise queue from Poortwachter?')) return; await post(`/api/textbooks/${b.dataset.delbook}/delete`); viewTextbook(); }, b)));
-  $$('[data-exreset]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/exercises/${b.dataset.exreset}/reset`); viewTextbook(); }, b)));
-  $$('[data-exdel]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/exercises/${b.dataset.exdel}/delete`); viewTextbook(); }, b)));
-  $$('[data-exsave]').forEach((b) => (b.onclick = () => guard(async () => {
-    const r = await post(`/api/textbooks/${b.dataset.exsave}/exercises`, { text: $(`[data-exadd="${b.dataset.exsave}"]`).value });
+  $$('[data-delbook]').forEach((b) => (b.onclick = () => guard(async () => { if (!confirm('Remove this PDF and its set queue from Poortwachter?')) return; await post(`/api/textbooks/${b.dataset.delbook}/delete`); viewTextbook(); }, b)));
+  $$('[data-clear]').forEach((b) => (b.onclick = () => guard(async () => { if (!confirm('Delete all sets that aren\'t done yet?')) return; await post(`/api/textbooks/${b.dataset.clear}/sets/clear`); viewTextbook(); }, b)));
+  $$('[data-setreset]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/sets/${b.dataset.setreset}/reset`); viewTextbook(); }, b)));
+  $$('[data-setdel]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/sets/${b.dataset.setdel}/delete`); viewTextbook(); }, b)));
+  $$('[data-setpractice]').forEach((b) => (b.onclick = () => {
+    const bk = findBook(b.dataset.book);
+    studyView({ book: bk, practice: true, set: bk.sets.find((x) => x.id === +b.dataset.setpractice) });
+  }));
+  $$('[data-practice]').forEach((b) => (b.onclick = () => studyView({ book: findBook(b.dataset.practice), practice: true })));
+  $$('[data-addlines]').forEach((b) => (b.onclick = () => guard(async () => {
+    const r = await post(`/api/textbooks/${b.dataset.addlines}/sets`, { text: $(`[data-lines="${b.dataset.addlines}"]`).value });
     toast(`${r.added} added${r.bad.length ? ` · couldn't read: ${r.bad.join(' | ')}` : ''}`, r.bad.length > 0);
     viewTextbook();
   }, b)));
-  $$('[data-practice]').forEach((b) => (b.onclick = () => studyView({ book: books.find((x) => x.id === +b.dataset.practice), practice: true })));
+  $$('[data-doimport]').forEach((b) => (b.onclick = () => guard(async () => {
+    const f = $(`[data-import="${b.dataset.doimport}"]`).files[0];
+    if (!f) throw new Error('Choose a sets file first.');
+    const r = await post(`/api/textbooks/${b.dataset.doimport}/sets/import`, { data: await f.text(), replace: $(`[data-replace="${b.dataset.doimport}"]`).checked });
+    toast(`${r.added} sets imported${r.over_cap ? ` · ${r.over_cap} over the daily limit` : ''}.`, r.over_cap > 0);
+    viewTextbook();
+  }, b)));
   $('#up').onclick = (e) => guard(async () => {
     const f = $('#up-file').files[0];
     if (!f) throw new Error('Choose a PDF first.');
@@ -766,9 +919,9 @@ async function viewTextbook() {
     toast('Textbook added.'); viewTextbook();
   }, e.target);
   const subs = await api('/api/submissions');
-  $('#subs').innerHTML = subs.length ? subs.slice(0, 12).map((s) => `
-    <details style="margin-bottom:8px"><summary>${esc(s.label)} · ${s.result.score ? `${s.result.score.correct}/${s.result.score.total}` : ''} <small>${new Date(s.ts * 1000).toLocaleDateString()}</small></summary>
-    ${renderResult(s.result)}</details>`).join('') : 'Nothing graded yet.';
+  $('#subs').innerHTML = subs.length ? subs.slice(0, 12).map((x) => `
+    <details style="margin-bottom:8px"><summary>${esc(x.label)} · ${x.result.score ? `${x.result.score.correct}/${x.result.score.total}` : ''} <small>${new Date(x.ts * 1000).toLocaleDateString()}</small></summary>
+    ${renderResult(x.result)}</details>`).join('') : 'Nothing graded yet.';
 }
 
 // ------------------------------------------------------------------ HISTORY
@@ -780,9 +933,9 @@ async function viewHistory() {
   $('#view').innerHTML = `
     <div class="section-title"><h1>History</h1><span class="muted">Emergency keys used in the last 30 days: <b>${S.state.emergency_30d}</b></span></div>
     <div class="card"><h2>Last 3 weeks</h2>
-      <div class="heat">${H.map((h) => `<div class="${h.complete ? 'full' : h.done ? 'part' : ''} ${h.emergency ? 'em' : ''}" title="${h.emergency ? 'emergency key used' : ''}">
-        <b>${h.done}/${h.total}</b>${esc(dayNl(h.day).slice(0, 2))} ${esc(h.day.slice(5))}</div>`).join('')}</div>
-      <p class="hint">Green = all done · orange = partly · dashed red = emergency key.</p></div>
+      <div class="heat">${H.map((h) => `<div class="${h.free ? 'free' : h.complete ? 'full' : h.done ? 'part' : ''} ${h.emergency ? 'em' : ''}" title="${h.emergency ? 'emergency key used' : h.free ? 'free day' : ''}">
+        <b>${h.free ? '🏖️' : `${h.done}/${h.total}`}</b>${esc(dayNl(h.day).slice(0, 2))} ${esc(h.day.slice(5))}</div>`).join('')}</div>
+      <p class="hint">Green = all done · orange = partly · blue 🏖️ = free day · dashed red = emergency key.</p></div>
     <div class="grid2">
       <div class="card"><h2>🗣️ Recordings</h2>
         ${recs.length ? recs.map((r) => `<div style="margin-bottom:14px"><div class="spread"><b lang="nl" style="font-weight:600">${esc(r.prompt)}</b><small>${new Date(r.ts * 1000).toLocaleDateString()} · ${Math.round(r.seconds)} s</small></div>
@@ -792,15 +945,16 @@ async function viewHistory() {
         ${subs.length ? subs.map((s) => `<details style="margin-bottom:8px"><summary>${esc(s.label)} · ${s.result.score ? `${s.result.score.correct}/${s.result.score.total}` : ''} <small>${new Date(s.ts * 1000).toLocaleDateString()}</small></summary>
           <h3 style="margin-top:10px">Your answers</h3><pre style="white-space:pre-wrap;font-family:inherit" lang="nl">${esc(s.answers)}</pre>${renderResult(s.result)}</details>`).join('') : '<p class="muted">Nothing graded yet.</p>'}</div>
     </div>
-    <div class="card"><h2>Log</h2><table><tbody>${events.filter((e) => ['emergency', 'blocked', 'unlocked', 'carryover', 'settings', 'service', 'watchdog'].includes(e.type)).slice(0, 60).map((e) => `
+    <div class="card"><h2>Log</h2><table><tbody>${events.filter((e) => ['emergency', 'blocked', 'unlocked', 'carryover', 'settings', 'service', 'watchdog', 'install', 'free-day', 'session'].includes(e.type)).slice(0, 60).map((e) => `
       <tr><td style="white-space:nowrap"><small>${new Date(e.ts * 1000).toLocaleString()}</small></td><td><b>${esc(e.type)}</b></td><td>${esc(e.detail)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
 // ------------------------------------------------------------------ SETTINGS
 
 async function viewSettings() {
-  await loadSettings();
+  await Promise.all([loadSettings(), loadActivities(), loadState()]);
   const s = S.settings;
+  const caps = s.category_caps || {};
   $('#view').innerHTML = `
     <div class="section-title"><h1>Settings</h1></div>
     <div class="grid2">
@@ -851,11 +1005,24 @@ async function viewSettings() {
           <button class="ghost small" id="b-ppp-save">Save</button>
         </div>
         <div class="card">
+          <h2>Daily limits &amp; planning</h2>
+          <p class="muted">The most required minutes per category on one day. The random draw and the planner never go over; bonus tasks are never limited. Leave empty for no limit.</p>
+          <div class="caps">${S.state.categories.filter(([k]) => k !== 'other').map(([k, v]) => `
+            <label>${CAT_ICON[k]} ${esc(v)}<input type="number" min="5" max="600" step="5" data-cap="${k}" value="${caps[k] ?? ''}" placeholder="no limit"></label>`).join('')}</div>
+          <label for="evmin">On a day where a session fills the whole budget, still require:</label>
+          <select id="evmin"><option value="">Nothing else</option>${S.activities.filter((a) => a.enabled).map((a) => `<option value="${a.id}" ${a.id === s.event_minimum_activity ? 'selected' : ''}>${esc(a.name)} (~${a.est_min} min)</option>`).join('')}</select>
+          <label for="ahead">Plan this many days ahead</label>
+          <input type="number" id="ahead" min="1" max="14" value="${s.plan_days_ahead}" style="max-width:120px">
+          <div style="margin-top:12px"><button id="limits-save">Save</button></div>
+          <p class="hint">Changes apply from tomorrow; days you've edited by hand keep your edits.</p>
+        </div>
+        <div class="card">
           <h2>The lock</h2>
           <p>Watching desktop user: ${s.watched_user ? `<code>${esc(s.watched_user)}</code>` : '<span class="err">none. Run the installer.</span>'}</p>
+          <p class="muted">Installed: ${esc(s.installed_day || '?')} (that day was free).</p>
           <p class="muted">The lock itself can't be switched off from this page on purpose. In a real emergency, open a terminal and run:</p>
           <p><code>sudo poortwachter noodsleutel</code></p>
-          <p class="muted">You type a commitment sentence, wait 90 seconds, and Steam opens until 02:00. It's logged in History.</p>
+          <p class="muted">You type a commitment sentence and wait 90 seconds, then Steam opens until 02:00. If you have a banked free day it uses that, so your chain stays intact; otherwise the day counts as missed. It's logged in History.</p>
           <label for="minfill">Smallest gap the random draw fills (minutes)</label>
           <div class="row"><input type="number" id="minfill" min="1" max="60" value="${s.min_fill_minutes}" style="max-width:120px"><button class="ghost small" id="minfill-save">Save</button></div>
         </div>
@@ -874,6 +1041,11 @@ async function viewSettings() {
   if ($('#b-out')) $('#b-out').onclick = (e) => guard(async () => { await post('/api/bw/logout'); viewSettings(); }, e.target);
   if ($('#b-test')) $('#b-test').onclick = (e) => guard(async () => { const r = await api('/api/bw/test'); $('#b-msg').textContent = `Today: ${r.reading.pages} pages · ${r.reading.paragraphs} paragraphs · ${r.reading.minutes} min · ${r.reading.sessions} sessions · ${r.cards} cards reviewed`; }, e.target);
   $('#b-ppp-save').onclick = (e) => guard(() => save({ bw_paragraphs_per_page: +$('#b-ppp').value }), e.target);
+  $('#limits-save').onclick = (e) => guard(async () => {
+    const category_caps = {};
+    $$('[data-cap]').forEach((i) => { if (i.value) category_caps[i.dataset.cap] = +i.value; });
+    await save({ category_caps, event_minimum_activity: $('#evmin').value ? +$('#evmin').value : null, plan_days_ahead: +$('#ahead').value });
+  }, e.target);
   $('#minfill-save').onclick = (e) => guard(() => save({ min_fill_minutes: +$('#minfill').value }), e.target);
 }
 

@@ -95,6 +95,49 @@ CREATE TABLE IF NOT EXISTS submissions (
     result      TEXT NOT NULL,
     ts          REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS textbook_sets (
+    id          INTEGER PRIMARY KEY,
+    textbook_id INTEGER NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0,
+    title       TEXT NOT NULL,
+    items       TEXT NOT NULL DEFAULT '[]',    -- [{label, page_from, page_to, minutes, review}]
+    est_min     INTEGER NOT NULL DEFAULT 25,
+    done        INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'other',  -- italki | library | other
+    category    TEXT NOT NULL DEFAULT 'speaking',
+    minutes     INTEGER NOT NULL DEFAULT 60,
+    weekday     INTEGER,                         -- weekly pattern: 0 = Monday
+    date        TEXT,                            -- one-off date
+    time        TEXT NOT NULL DEFAULT '',
+    start_date  TEXT,
+    end_date    TEXT,
+    note_words  INTEGER NOT NULL DEFAULT 10,
+    link        INTEGER NOT NULL DEFAULT 0,
+    place       TEXT NOT NULL DEFAULT '',
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_skips (
+    event_id INTEGER NOT NULL,
+    day      TEXT NOT NULL,
+    PRIMARY KEY (event_id, day)
+);
+CREATE TABLE IF NOT EXISTS free_days (
+    day    TEXT PRIMARY KEY,
+    source TEXT NOT NULL,        -- install | planned | emergency
+    ts     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pto_ledger (
+    id     INTEGER PRIMARY KEY,
+    day    TEXT NOT NULL,
+    hours  INTEGER NOT NULL,     -- +1 per completed day, -24 per free day
+    reason TEXT NOT NULL,
+    ts     REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS recordings (
     id      INTEGER PRIMARY KEY,
     task_id INTEGER,
@@ -172,12 +215,6 @@ DEFAULT_ACTIVITIES = [
      {"minutes": 20, "note_words": 20,
       "note_prompt": "Wat heb je gekeken? Noem drie nieuwe woorden."}, 22, 0.6, 1,
      "Watch something Dutch with Dutch subtitles."),
-    ("italki lesson", "speaking", "honor",
-     {"link": True, "note_words": 10, "label": "What did you practise in the lesson?"}, 60, 1.0, 0,
-     "Honour-based. Add it to a weekday's core tasks, or to a planned day."),
-    ("In-person Dutch event", "speaking", "honor",
-     {"link": False, "note_words": 10, "label": "Where were you, and what did you talk about?"}, 90, 1.0, 0,
-     "Honour-based: taalcafé, meetup, conversation group."),
 ]
 
 
@@ -206,6 +243,13 @@ DEFAULT_SETTINGS = {
     "speaking_prompts": SPEAKING_PROMPTS,
     "min_fill_minutes": 8,
     "active_textbook": None,
+    # Most minutes a day of required work per category (generator + planner).
+    "category_caps": {"textbook": 45, "reading": 45},
+    # On a day where a planned session fills the budget, this activity is still required.
+    "event_minimum_activity": 1,
+    "plan_days_ahead": 7,
+    "installed_day": None,           # set on first start: that day is free
+    "pto_processed_through": None,
 }
 
 
@@ -234,6 +278,9 @@ def init():
                     "INSERT INTO activities (name, category, kind, params, est_min, weight, in_pool,"
                     " description, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                     (name, cat, kind, json.dumps(params), est, weight, pool, desc, time.time()))
+        _migrate(conn)
+        if get_setting("installed_day") is None:
+            _mark_install_day(conn)
         for d in (config.TEXTBOOK_DIR, config.RECORDING_DIR):
             d.mkdir(parents=True, exist_ok=True)
         try:
@@ -242,6 +289,36 @@ def init():
             config.DB_PATH.chmod(0o600)
         except OSError:
             pass
+
+
+def _columns(conn, table):
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate(conn):
+    """Bring a database from an earlier version up to date."""
+    if "event_id" not in _columns(conn, "tasks"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN event_id INTEGER")
+    if "time" not in _columns(conn, "tasks"):
+        conn.execute("ALTER TABLE tasks ADD COLUMN time TEXT NOT NULL DEFAULT ''")
+    # v1 kept single exercises; v2 groups them into sets.
+    for ex in conn.execute("SELECT * FROM exercises").fetchall():
+        conn.execute(
+            "INSERT INTO textbook_sets (textbook_id, position, title, items, est_min, done) VALUES (?,?,?,?,?,?)",
+            (ex["textbook_id"], ex["position"], ex["label"],
+             json.dumps([{"label": ex["label"], "page_from": ex["page_from"], "page_to": ex["page_to"],
+                          "minutes": 25}]), 25, ex["done"]))
+    conn.execute("DELETE FROM exercises")
+
+
+def _mark_install_day(conn):
+    """The day Poortwachter is installed is free; blocking starts at the next 02:00."""
+    import datetime as dt
+    day = (dt.datetime.now() - dt.timedelta(hours=config.RESET_HOUR)).date().isoformat()
+    set_setting("installed_day", day)
+    set_setting("pto_processed_through", day)
+    conn.execute("INSERT OR IGNORE INTO free_days (day, source, ts) VALUES (?, 'install', ?)", (day, time.time()))
+    log("install", f"installed on {day}: today is free, the lock starts at 02:00")
 
 
 def get_setting(key):

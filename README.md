@@ -1,13 +1,34 @@
-# Poortwachter
+# Poortwachter v2
 
 *Eerst Nederlands, dan spelen.* Steam stays closed until the day's Dutch study roster is done. The day resets at **02:00**.
 
 ## Install (Linux Mint)
 
+The repo is private, so log this computer in to GitHub once:
+
 ```bash
-unzip poortwachter.zip && cd poortwachter
-sudo ./install.sh
+sudo apt install gh git
+gh auth login          # GitHub.com → HTTPS → log in with a web browser
+gh auth setup-git
 ```
+
+Then install the latest release:
+
+```bash
+git clone --depth 1 --branch "$(git ls-remote --tags --refs https://github.com/emergencepathways/poortwachter.git 'v*' | sed 's#.*refs/tags/##' | sort -V | tail -1)" https://github.com/emergencepathways/poortwachter.git
+cd poortwachter && sudo ./install.sh
+```
+
+(A release zip works too: `unzip`, `cd poortwachter`, `sudo ./install.sh`.)
+
+## Updates
+
+```bash
+poortwachter-update            # as yourself, not sudo
+poortwachter-update --check    # just check
+```
+
+It installs the newest tagged release and shows what's new first. Your data is kept.
 
 Then open **Poortwachter** from the menu (or go to http://127.0.0.1:7623/).
 
@@ -73,3 +94,32 @@ You're the admin on your own machine, so this is friction, not a prison. Stoppin
   - read-only requests to your own Boekenwurm account.
 - **Logs.** `journalctl -u poortwachter -f`
 - **Tests.** `python3 -m unittest discover -s tests`
+
+## What's new in v2
+
+- **Install day is free.** The lock starts at the next 02:00.
+- **Plan a week ahead** in the Plan tab. Today stays fixed.
+- **Sessions:** italki lessons (60 min) and library group study, weekly or on a date. Their minutes count toward the day's budget. If they fill it, only the "still required" task remains (Anki by default).
+- **Daily limits:** at most 45 min of textbook and 45 min of required reading per day (Settings).
+- **Free days, earned like PTO:**
+  - Each completed day earns +1 h, and 24 h buys 1 free day.
+  - A missed day wipes the partial hours. Whole banked days are kept.
+  - The cap is 15 days, rising by 1 per year to 20.
+  - The emergency key spends a banked day if you have one.
+- **Textbook sets:** one day's textbook work, up to 45 min, with review exercises mixed in. Import them from a sets file.
+
+### Sets file format
+
+```json
+{"sets": [
+  {"title": "Set 12 · H5 + review H2",
+   "items": [
+     {"label": "H5 Oefening 3", "page_from": 84, "page_to": 85, "minutes": 20},
+     {"label": "H2 Oefening 6", "page_from": 31, "minutes": 10, "review": true, "note": "de/het"}
+   ]}
+]}
+```
+
+`est_min` is optional (default: the sum of the items' minutes). Page numbers are **printed** page numbers; the page offset converts them to PDF pages.
+
+The full install and management guide is the "Poortwachter: install & management guide" doc.

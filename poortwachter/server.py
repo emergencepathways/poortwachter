@@ -15,7 +15,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, actions, config, db, roster, textbook, verify_anki, verify_boekenwurm
+from . import __version__, actions, config, db, events, pto, roster, textbook, verify_anki, verify_boekenwurm
 from .config import CATEGORIES, KINDS
 
 MAX_JSON = 2 * 1024 * 1024
@@ -23,8 +23,9 @@ MAX_RECORDING = 60 * 1024 * 1024
 MAX_PDF = 600 * 1024 * 1024
 
 SETTABLE = {"schedule", "claude_api_key", "claude_model", "anki_collection", "bw_url", "bw_key",
-            "bw_paragraphs_per_page", "speaking_prompts", "min_fill_minutes", "active_textbook"}
-PLAN_KEYS = {"schedule", "min_fill_minutes"}
+            "bw_paragraphs_per_page", "speaking_prompts", "min_fill_minutes", "active_textbook",
+            "category_caps", "event_minimum_activity", "plan_days_ahead"}
+PLAN_KEYS = {"schedule", "min_fill_minutes", "category_caps", "event_minimum_activity", "active_textbook"}
 
 
 class HTTPError(Exception):
@@ -50,24 +51,38 @@ def route(method, pattern):
 
 
 def refresh_future():
-    """Plan changes apply from tomorrow: redraw future rosters you haven't hand-edited."""
-    t = roster.today()
-    for r in db.connect().execute("SELECT day, edited FROM rosters WHERE day > ?", (t,)).fetchall():
-        if not r["edited"]:
-            roster.regenerate(r["day"])
+    roster.refresh_future()
 
 
 def day_view(day):
     roster.ensure_roster(day)
     tasks = [roster.public_task(t) for t in roster.tasks_for(day)]
     counting = [t for t in tasks if t["counts"]]
+    cat_minutes = {}
+    for t in counting:
+        if t["source"] != "event" and t["kind"] != "mystery":
+            cat_minutes[t["category"]] = cat_minutes.get(t["category"], 0) + t["est_min"]
     return {
         "day": day,
-        "editable": day > roster.today(),
+        "editable": roster.today() < day <= roster.max_plan_day(),
         "tasks": tasks,
         "planned_minutes": sum(t["est_min"] for t in counting),
         "budget": db.get_setting("schedule")[str(dt.date.fromisoformat(day).weekday())]["budget"],
+        "free": pto.free_source(day),
+        "sessions": [t for t in tasks if t["source"] == "event"],
+        "category_minutes": cat_minutes,
+        "caps": roster.caps(),
     }
+
+
+def week_strip():
+    out = []
+    for d in roster.plan_days():
+        v = day_view(d)
+        out.append({"day": d, "planned_minutes": v["planned_minutes"], "budget": v["budget"],
+                    "free": v["free"], "sessions": len(v["sessions"]),
+                    "tasks": len([t for t in v["tasks"] if t["counts"]])})
+    return out
 
 
 def settings_view():
@@ -87,6 +102,10 @@ def settings_view():
         "min_fill_minutes": db.get_setting("min_fill_minutes"),
         "active_textbook": db.get_setting("active_textbook"),
         "watched_user": config.read_conf().get("user"),
+        "category_caps": db.get_setting("category_caps"),
+        "event_minimum_activity": db.get_setting("event_minimum_activity"),
+        "plan_days_ahead": db.get_setting("plan_days_ahead"),
+        "installed_day": db.get_setting("installed_day"),
     }
 
 
@@ -103,6 +122,10 @@ def api_state(h, m):
         "lock": roster.lock_state(t),
         "today": day_view(t),
         "tomorrow": day_view(tm),
+        "week": week_strip(),
+        "pto": pto.summary(),
+        "installed_day": db.get_setting("installed_day"),
+        "event_minimum": db.get_setting("event_minimum_activity"),
         "streak": roster.streak(),
         "history": roster.history(21),
         "emergency_30d": unlocks,
@@ -119,12 +142,13 @@ def api_lock(h, m):
 @route("GET", r"/api/day/(\d{4}-\d{2}-\d{2})")
 def api_day(h, m):
     day = m.group(1)
-    if day > roster.tomorrow():
-        raise HTTPError(400, "You can plan one day ahead.")
+    if day > roster.max_plan_day():
+        raise HTTPError(400, "You can plan up to a week ahead.")
     if day < roster.today():
         exists = db.connect().execute("SELECT 1 FROM rosters WHERE day = ?", (day,)).fetchone()
         if not exists:
-            return {"day": day, "editable": False, "tasks": [], "planned_minutes": 0, "budget": 0}
+            return {"day": day, "editable": False, "tasks": [], "planned_minutes": 0, "budget": 0,
+                    "free": None, "sessions": [], "category_minutes": {}, "caps": roster.caps()}
     return day_view(day)
 
 
@@ -146,8 +170,6 @@ def api_regen(h, m):
 def api_add(h, m):
     b = h.json()
     day = m.group(1)
-    if day > roster.tomorrow():
-        raise HTTPError(400, "You can plan one day ahead.")
     roster.add_task(day, int(b["activity_id"]), bonus=bool(b.get("bonus")))
     return day_view(day)
 
@@ -156,8 +178,6 @@ def api_add(h, m):
 def api_add_mystery(h, m):
     b = h.json()
     day = m.group(1)
-    if day > roster.tomorrow():
-        raise HTTPError(400, "You can plan one day ahead.")
     roster.add_mystery(day, b.get("category") or None)
     return day_view(day)
 
@@ -181,6 +201,68 @@ def api_mystify(h, m):
     t = roster.task(int(m.group(1)))
     roster.mystify(int(m.group(1)))
     return day_view(t["day"])
+
+
+# ---------------------------------------------------------------- sessions & free days
+
+
+def _after_session_change():
+    roster.refresh_future()
+    roster._sync_events(roster.today())  # adds only: today's plan can't shrink
+
+
+@route("GET", r"/api/sessions")
+def api_sessions(h, m):
+    return {"sessions": events.all_events(), "presets": events.PRESETS}
+
+
+@route("POST", r"/api/sessions")
+def api_session_create(h, m):
+    events.create(h.json())
+    _after_session_change()
+    return api_sessions(h, m)
+
+
+@route("POST", r"/api/sessions/(\d+)")
+def api_session_update(h, m):
+    events.update(int(m.group(1)), h.json())
+    _after_session_change()
+    return api_sessions(h, m)
+
+
+@route("POST", r"/api/sessions/(\d+)/end")
+def api_session_end(h, m):
+    events.end(int(m.group(1)))
+    _after_session_change()
+    return api_sessions(h, m)
+
+
+@route("POST", r"/api/sessions/(\d+)/skip")
+def api_session_skip(h, m):
+    b = h.json()
+    if b.get("undo"):
+        events.unskip(int(m.group(1)), b["day"])
+    else:
+        events.skip(int(m.group(1)), b["day"])
+    _after_session_change()
+    return day_view(b["day"])
+
+
+@route("GET", r"/api/pto")
+def api_pto(h, m):
+    return pto.summary()
+
+
+@route("POST", r"/api/pto/free")
+def api_pto_free(h, m):
+    pto.plan_free_day(h.json().get("day", ""))
+    return pto.summary()
+
+
+@route("POST", r"/api/pto/cancel")
+def api_pto_cancel(h, m):
+    pto.cancel_free_day(h.json().get("day", ""))
+    return pto.summary()
 
 
 # ---------------------------------------------------------------- working on tasks
@@ -338,6 +420,13 @@ def api_settings_save(h, m):
                     "core": [int(i) for i in s.get("core", [])],
                 }
             value = clean
+        if key == "category_caps":
+            value = {k: max(5, min(int(v), 600)) for k, v in (value or {}).items()
+                     if k in dict(CATEGORIES) and v not in (None, "", 0, "0")}
+        if key == "plan_days_ahead":
+            value = max(1, min(int(value), 14))
+        if key == "event_minimum_activity":
+            value = int(value) if value else None
         if key in ("claude_api_key", "bw_key") and value == "":
             continue  # empty field = keep the stored secret
         if key == "speaking_prompts":
@@ -401,7 +490,7 @@ def api_books(h, m):
     for b in textbook.books():
         b = dict(b)
         b.pop("file", None)
-        b["exercises"] = textbook.exercises(b["id"])
+        b["sets"] = textbook.sets(b["id"])
         out.append(b)
     return {"books": out, "active": db.get_setting("active_textbook")}
 
@@ -448,23 +537,41 @@ def api_book_activate(h, m):
     return api_books(h, m)
 
 
-@route("POST", r"/api/textbooks/(\d+)/exercises")
-def api_ex_add(h, m):
-    added, bad = textbook.add_exercises(int(m.group(1)), h.json().get("text", ""))
+@route("POST", r"/api/textbooks/(\d+)/sets")
+def api_sets_add(h, m):
+    added, bad = textbook.add_lines(int(m.group(1)), h.json().get("text", ""))
+    roster.refresh_future()
     out = api_books(h, m)
     out["added"], out["bad"] = added, bad
     return out
 
 
-@route("POST", r"/api/exercises/(\d+)/delete")
-def api_ex_delete(h, m):
-    textbook.delete_exercise(int(m.group(1)))
+@route("POST", r"/api/textbooks/(\d+)/sets/import")
+def api_sets_import(h, m):
+    b = h.json()
+    n, over = textbook.import_sets(int(m.group(1)), b.get("data"), bool(b.get("replace")))
+    roster.refresh_future()
+    out = api_books(h, m)
+    out["added"], out["over_cap"] = n, over
+    return out
+
+
+@route("POST", r"/api/textbooks/(\d+)/sets/clear")
+def api_sets_clear(h, m):
+    textbook.clear_sets(int(m.group(1)))
+    roster.refresh_future()
     return api_books(h, m)
 
 
-@route("POST", r"/api/exercises/(\d+)/reset")
-def api_ex_reset(h, m):
-    textbook.reset_exercise(int(m.group(1)))
+@route("POST", r"/api/sets/(\d+)/delete")
+def api_set_delete(h, m):
+    textbook.delete_set(int(m.group(1)))
+    return api_books(h, m)
+
+
+@route("POST", r"/api/sets/(\d+)/reset")
+def api_set_reset(h, m):
+    textbook.reset_set(int(m.group(1)))
     return api_books(h, m)
 
 
@@ -472,7 +579,7 @@ def api_ex_reset(h, m):
 def api_practice(h, m):
     b = h.json()
     return actions.practice_textbook(int(m.group(1)), b.get("page_from"), b.get("page_to"),
-                                     b.get("label", ""), b.get("answers", ""))
+                                     b.get("label", ""), b.get("answers", ""), b.get("set_id"))
 
 
 @route("GET", r"/api/submissions")
@@ -578,7 +685,7 @@ class Handler(BaseHTTPRequestHandler):
         except HTTPError as e:
             self.send_json({"error": e.message}, e.status)
         except (roster.EditError, actions.ActionError, textbook.TextbookError,
-                verify_boekenwurm.BWError) as e:
+                verify_boekenwurm.BWError, events.EventError, pto.PTOError, ValueError) as e:
             self.send_json({"error": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
             db.log("error", traceback.format_exc()[-1500:])

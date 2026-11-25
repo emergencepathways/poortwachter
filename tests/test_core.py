@@ -37,6 +37,10 @@ class Base(unittest.TestCase):
         self.config, self.db, self.roster, self.actions = config, db, roster, actions
         self.textbook, self.anki, self.bw, self.dutch = textbook, verify_anki, verify_boekenwurm, dutch
         db.init()
+        # Pretend Poortwachter was installed weeks ago, so today is a normal locked day.
+        db.connect().execute("DELETE FROM free_days")
+        db.set_setting("installed_day", "2026-11-01")
+        db.set_setting("pto_processed_through", "2026-11-24")
         self.set_now(dt.datetime(2026, 11, 25, 10, 0))  # a Wednesday
 
     def tearDown(self):
@@ -101,7 +105,7 @@ class RosterTests(Base):
         r.remove_task(tm[-1]["id"])
         self.assertEqual(len(r.tasks_for(r.tomorrow())), len(tm) - 1)
         # Adding to today is allowed and it counts.
-        tid = r.add_task(r.today(), 9)
+        tid = r.add_task(r.today(), 10)  # Grammar sentences
         self.assertEqual(r.task(tid)["counts"], 1)
         # Bonus tasks can be removed again.
         bid = r.add_task(r.today(), 10, bonus=True)
@@ -229,8 +233,10 @@ class CheckTests(Base):
 
     def test_honor_needs_note(self):
         r = self.roster
-        aid = next(x["id"] for x in r.activities() if x["name"] == "italki lesson")
-        tid = r.add_task(r.today(), aid)
+        from poortwachter import events
+        events.create({"kind": "italki", "date": r.today(), "time": "18:00"})
+        r._sync_events(r.today())
+        tid = next(t["id"] for t in r.tasks_for(r.today()) if t["source"] == "event")
         with self.assertRaises(self.actions.ActionError):
             self.actions.submit_honor(tid, "good")
         self.actions.submit_honor(tid, "We oefenden de perfectum en praatten over mijn weekend, heel leuk", "https://www.italki.com/lesson/1")
@@ -341,33 +347,47 @@ class FakeResp:
 
 
 class TextbookTests(Base):
-    def test_queue_extract_and_grade(self):
+    def test_sets_extract_and_grade(self):
         tb = self.textbook
         src = os.path.join(self.tmp, "book.pdf")
-        tiny_pdf(src, 12)
+        tiny_pdf(src, 40)
         bid = tb.add_book("Testboek", src)
-        self.assertEqual(tb.book(bid)["pages"], 12)
+        self.assertEqual(tb.book(bid)["pages"], 40)
         tb.set_offset(bid, 2)
-        added, bad = tb.add_exercises(bid, "H1 Oefening 1; 3\nH1 Oefening 2; 4-5\nnonsense line\nH2 Oefening 1 | 7")
-        self.assertEqual(added, 3)
-        self.assertEqual(bad, ["nonsense line"])
+        added, bad = tb.add_lines(bid, "H1 Oefening 1; 3\nH1 Oefening 2; 4-5; 15\nnonsense line")
+        self.assertEqual((added, bad), (2, ["nonsense line"]))
+        n, over = tb.import_sets(bid, json.dumps({"sets": [
+            {"title": "Set 3: H2 + review H1", "items": [
+                {"label": "H2 Oefening 1", "page_from": 20, "page_to": 21, "minutes": 20},
+                {"label": "H1 Oefening 4 (review)", "page_from": 8, "minutes": 10, "review": True}]},
+            {"title": "Too long", "est_min": 60, "items": [{"label": "x", "page_from": 30, "minutes": 60}]},
+        ]}))
+        self.assertEqual((n, over), (2, 1))
+        sets = tb.sets(bid)
+        self.assertEqual([s["est_min"] for s in sets], [20, 15, 30, 60])
 
-        pdf = tb.extract_pages(tb.book(bid)["file"], 6, 7)
-        self.assertTrue(pdf.startswith(b"%PDF"))
+        pdf = tb.extract_pages(tb.book(bid)["file"], [10, 6, 7])
         info = subprocess.run(["pdfinfo", "-"], input=pdf, capture_output=True).stdout.decode()
-        self.assertRegex(info, r"Pages:\s+2\n")
+        self.assertRegex(info, r"Pages:\s+3\n")
+        self.assertEqual(tb._ranges([3, 4, 5, 9, 11, 12]), "3-5,9,11-12")
 
         r = self.roster
         aid = next(a["id"] for a in r.activities() if a["kind"] == "textbook")
+        # Two sets done already, so the next is the multi-exercise one.
+        tb.mark_set_done(sets[0]["id"])
+        tb.mark_set_done(sets[1]["id"])
         tid = r.add_task(r.today(), aid)
+        self.assertEqual(r.task(tid)["est_min"], 30, "textbook task takes the next set's minutes")
         target = self.actions.textbook_target(tid)
-        self.assertEqual(target["label"], "H1 Oefening 1")
+        self.assertEqual(target["title"], "Set 3: H2 + review H1")
 
         self.db.set_setting("claude_api_key", "sk-test")
         reply = {"content": [{"type": "text", "text": "Here you go:\n" + json.dumps({
             "exercise_found": True,
-            "items": [{"number": "1", "answer": "Ik heb gisteren gewerkt", "correct": True, "corrected": "Ik heb gisteren gewerkt."},
-                      {"number": "2", "answer": "Hij is naar huis gelopt", "correct": False, "corrected": "Hij is naar huis gelopen.",
+            "items": [{"exercise": "H2 Oefening 1", "number": "1", "answer": "Ik heb gisteren gewerkt",
+                       "correct": True, "corrected": "Ik heb gisteren gewerkt."},
+                      {"exercise": "H1 Oefening 4", "number": "1", "answer": "Hij is naar huis gelopt",
+                       "correct": False, "corrected": "Hij is naar huis gelopen.",
                        "rule": "Irregular past participle", "example": "Wij zijn gelopen."}],
             "summary": "Good."})}]}
         sent = {}
@@ -378,17 +398,21 @@ class TextbookTests(Base):
             return FakeResp(json.dumps(reply).encode())
 
         with mock.patch.object(tb.urllib.request, "urlopen", fake_urlopen):
-            res = self.actions.submit_textbook(tid, "1. Ik heb gisteren gewerkt\n2. Hij is naar huis gelopt")
+            res = self.actions.submit_textbook(tid, "## H2 Oefening 1\n1. Ik heb gisteren gewerkt\n"
+                                                    "## H1 Oefening 4\n1. Hij is naar huis gelopt")
         self.assertEqual(res["score"], {"correct": 1, "total": 2})
         self.assertEqual(sent["headers"]["X-api-key"], "sk-test")
-        doc = sent["body"]["messages"][0]["content"][0]
-        self.assertEqual(doc["type"], "document")
+        content = sent["body"]["messages"][0]["content"]
         import base64
-        sent_pdf = base64.b64decode(doc["source"]["data"])
+        sent_pdf = base64.b64decode(content[0]["source"]["data"])
         info = subprocess.run(["pdfinfo", "-"], input=sent_pdf, capture_output=True).stdout.decode()
-        self.assertRegex(info, r"Pages:\s+1\n")  # printed p.3 + offset 2 = PDF p.5, one page only
+        self.assertRegex(info, r"Pages:\s+3\n")  # printed 8, 20, 21
+        self.assertIn("printed pages 8, 20–21", content[1]["text"])
+        self.assertIn("H1 Oefening 4 (review) (page 8) [review]", content[1]["text"])
+        text = subprocess.run(["pdftotext", "-", "-"], input=sent_pdf, capture_output=True).stdout.decode()
+        self.assertIn("Pagina 10", text)  # printed 8 + offset 2
         self.assertEqual(r.task(tid)["status"], "done")
-        self.assertEqual(tb.next_exercise(bid)["label"], "H1 Oefening 2")
+        self.assertEqual(tb.next_set(bid)["title"], "Too long")
 
     def test_grade_needs_key(self):
         tb = self.textbook
@@ -396,7 +420,7 @@ class TextbookTests(Base):
         tiny_pdf(src, 3)
         bid = tb.add_book("B", src)
         with self.assertRaises(tb.TextbookError):
-            tb.grade(bid, 1, 1, "x", "1. a")
+            tb.grade(bid, [{"label": "x", "page_from": 1, "page_to": 1}], "1. a")
 
 
 # ---------------------------------------------------------------- Boekenwurm (fake Supabase)
