@@ -4,9 +4,8 @@
 #   poortwachter-update           check, show what's new, ask, install
 #   poortwachter-update --check   only say whether an update is available
 #
-# Run it as yourself, NOT with sudo: the repo is private, so it uses your own
-# GitHub login (gh auth login + gh auth setup-git). It asks for your password
-# only for the install step.
+# Run it as yourself, NOT with sudo. The repo is public, so no GitHub login is
+# needed. It asks for your password only for the install step.
 set -euo pipefail
 
 REPO="${POORTWACHTER_REPO:-https://github.com/emergencepathways/poortwachter.git}"
@@ -15,7 +14,7 @@ CHECK_ONLY=0
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Run this without sudo:  poortwachter-update"
-  echo "(It needs your own GitHub login; it asks for sudo itself when it installs.)"
+  echo "(It asks for sudo itself when it installs.)"
   exit 1
 fi
 
@@ -23,21 +22,17 @@ installed=$(PYTHONPATH=/opt/poortwachter python3 -c 'import poortwachter; print(
 
 if ! tags=$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs "$REPO" 'v*' 2>/dev/null); then
   cat <<MSG
-Couldn't reach the Poortwachter repo on GitHub.
-The repo is private, so this computer needs your GitHub login once:
-
-  sudo apt install gh        # if you don't have it yet
-  gh auth login              # GitHub.com → HTTPS → log in with a web browser
-  gh auth setup-git
-
-Then run poortwachter-update again.
+Couldn't reach the Poortwachter repo on GitHub ($REPO).
+Check your internet connection and try again. If the repo has been made
+private, log this computer in once (sudo apt install gh; gh auth login;
+gh auth setup-git) and run poortwachter-update again.
 MSG
   exit 1
 fi
 
 latest=$(printf '%s\n' "$tags" | sed -n 's#.*refs/tags/v##p' | sort -V | tail -1)
 if [ -z "$latest" ]; then
-  echo "No releases on GitHub yet."
+  echo "No releases on GitHub yet (create one under Releases on the repo page)."
   exit 1
 fi
 

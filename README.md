@@ -4,17 +4,10 @@
 
 ## Install (Linux Mint)
 
-The repo is private, so log this computer in to GitHub once:
+Install the latest release straight from GitHub (no login needed):
 
 ```bash
-sudo apt install gh git
-gh auth login          # GitHub.com → HTTPS → log in with a web browser
-gh auth setup-git
-```
-
-Then install the latest release:
-
-```bash
+sudo apt install git
 git clone --depth 1 --branch "$(git ls-remote --tags --refs https://github.com/emergencepathways/poortwachter.git 'v*' | sed 's#.*refs/tags/##' | sort -V | tail -1)" https://github.com/emergencepathways/poortwachter.git
 cd poortwachter && sudo ./install.sh
 ```
