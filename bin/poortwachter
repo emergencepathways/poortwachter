@@ -1,0 +1,4 @@
+#!/bin/sh
+# Poortwachter command line (status, open, noodsleutel).
+export PYTHONPATH=/opt/poortwachter
+exec /usr/bin/python3 -m poortwachter "$@"

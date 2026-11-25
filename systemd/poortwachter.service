@@ -1,0 +1,20 @@
+[Unit]
+Description=Poortwachter: study first, then Steam
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONPATH=/opt/poortwachter
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m poortwachter serve
+WorkingDirectory=/opt/poortwachter
+Restart=always
+RestartSec=2
+# Light hardening. It must stay root to read your Anki folder and close Steam.
+ProtectSystem=full
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

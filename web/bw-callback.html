@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Signing in…</title>
+<style>body{font:16px system-ui,sans-serif;display:grid;place-items:center;height:90vh;color:#1d2433}</style>
+</head>
+<body>
+<p id="msg">Signing in to Boekenwurm…</p>
+<script>
+(async () => {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const msg = document.getElementById('msg');
+  if (!p.get('access_token')) {
+    msg.textContent = p.get('error_description') || 'No sign-in found in this link. Start again from Settings.';
+    return;
+  }
+  const r = await fetch('/api/bw/tokens', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Poortwachter': '1'},
+    body: JSON.stringify({
+      access_token: p.get('access_token'),
+      refresh_token: p.get('refresh_token'),
+      expires_in: p.get('expires_in'),
+    }),
+  });
+  if (r.ok) location.replace('/#settings?bw=ok');
+  else msg.textContent = (await r.json()).error || 'Sign-in failed.';
+})();
+</script>
+</body>
+</html>

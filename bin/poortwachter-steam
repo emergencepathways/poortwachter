@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Stands in front of Steam's menu icon.
+
+Usage (from a .desktop file):  poortwachter-steam -- /usr/games/steam %U
+If today's roster is done, it starts Steam. Otherwise it shows what's left and
+opens the study app. (The service closes Steam anyway if it's started some
+other way. This just makes the normal route friendly.)"""
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+
+URL = "http://127.0.0.1:7623"
+args = sys.argv[1:]
+if "--" in args:
+    args = args[args.index("--") + 1:]
+if not args:
+    args = ["/usr/games/steam"]
+args = [a for a in args if not a.startswith("%")]  # unexpanded desktop field codes
+
+
+def notify(title, body):
+    subprocess.call(["notify-send", "-a", "Poortwachter", "-i", "dialog-information", title, body])
+
+
+try:
+    with urllib.request.urlopen(URL + "/api/lock", timeout=4) as r:
+        state = json.loads(r.read())
+except OSError:
+    notify("Poortwachter isn't running",
+           "Steam stays closed until it's back: sudo systemctl start poortwachter")
+    sys.exit(1)
+
+if state.get("unlocked"):
+    os.execvp(args[0], args)
+
+left = state["total"] - state["done"]
+notify("Steam is locked 🔒",
+       f"{left} study task{'s' if left != 1 else ''} to go (~{state['minutes_left']} min). "
+       "Eerst Nederlands, dan spelen!")
+subprocess.Popen(["xdg-open", URL + "/"])

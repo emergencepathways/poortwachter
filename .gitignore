@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+# Never commit personal or copyrighted material: textbook PDFs, sets files built
+# from the textbook, recordings, databases, keys.
+private/
+*.pdf
+*.db
+*.db-wal
+*.db-shm
+*.webm
+*.ogg
+sets*.json
+*.zip
+.env
