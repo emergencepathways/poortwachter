@@ -2,6 +2,11 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [2.1.0] - 2026-11-25
+
+- Boekenwurm sign-in with the 6-digit code from the sign-in email, so no Supabase redirect-URL setup is needed. (The link still works if the redirect URL is added.)
+- Clearer messages for a wrong email address, an expired code, and Supabase's email rate limit.
+
 ## [2.0.0] - 2026-11-25
 
 - Install day is free: the lock starts at the next 02:00.

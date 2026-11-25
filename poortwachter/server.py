@@ -461,6 +461,12 @@ def api_bw_login(h, m):
     return {"sent": True}
 
 
+@route("POST", r"/api/bw/code")
+def api_bw_code(h, m):
+    verify_boekenwurm.finish_login_otp(h.json().get("code", ""))
+    return verify_boekenwurm.status()
+
+
 @route("POST", r"/api/bw/tokens")
 def api_bw_tokens(h, m):
     b = h.json()

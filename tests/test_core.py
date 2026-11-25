@@ -446,6 +446,11 @@ class FakeSupabase(BaseHTTPRequestHandler):
         if self.path.startswith("/auth/v1/token?grant_type=pkce"):
             return self._send({"access_token": "A1", "refresh_token": "R1", "expires_in": 3600,
                                "user": {"email": "me@example.com"}})
+        if self.path == "/auth/v1/verify":
+            if body.get("token") != "123456" or body.get("type") != "email":
+                return self._send({"msg": "Token has expired or is invalid"}, 403)
+            return self._send({"access_token": "A3", "refresh_token": "R3", "expires_in": 3600,
+                               "user": {"email": body["email"]}})
         if self.path.startswith("/auth/v1/token?grant_type=refresh_token"):
             return self._send({"access_token": "A2", "refresh_token": "R2", "expires_in": 3600})
         self._send({}, 404)
@@ -504,6 +509,25 @@ class BoekenwurmTests(Base):
             bw.cards_today(self.roster.today())
             self.assertEqual(self.db.get_setting("bw_session")["refresh_token"], "R2")
             self.assertEqual(FakeSupabase.calls[-1][1], "Bearer A2")
+        finally:
+            srv.shutdown()
+
+    def test_sign_in_with_code(self):
+        srv = HTTPServer(("127.0.0.1", 0), FakeSupabase)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            self.db.set_setting("bw_url", f"http://127.0.0.1:{srv.server_port}")
+            self.db.set_setting("bw_key", "anon")
+            bw = self.bw
+            with self.assertRaises(bw.BWError):
+                bw.finish_login_otp("123456")  # no email sent yet
+            bw.start_login("me@example.com")
+            with self.assertRaises(bw.BWError) as cm:
+                bw.finish_login_otp("999999")
+            self.assertIn("didn't work", str(cm.exception))
+            bw.finish_login_otp(" 123 456 ")
+            self.assertTrue(bw.status()["signed_in"])
+            self.assertEqual(self.db.get_setting("bw_session")["refresh_token"], "R3")
         finally:
             srv.shutdown()
 

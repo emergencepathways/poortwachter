@@ -996,8 +996,12 @@ async function viewSettings() {
           <button id="b-save" class="ghost">Save connection</button>
           <hr>
           <label for="b-email">Your Boekenwurm email</label>
-          <div class="row"><input type="email" id="b-email" style="flex:1" value="${esc(s.bw.email)}"><button id="b-login">Email me a sign-in link</button></div>
-          <p class="hint"><b>One-time setup:</b> in Supabase → Authentication → URL Configuration, add <code>${esc(s.bw.callback)}</code> to Redirect URLs. Then open the link from the email <i>on this computer</i>.</p>
+          <div class="row"><input type="email" id="b-email" style="flex:1" value="${esc(s.bw.email)}"><button id="b-login">${s.bw.signed_in ? 'Sign in again' : 'Send sign-in email'}</button></div>
+          <div id="b-codebox" ${s.bw.signed_in ? 'hidden' : ''}>
+            <label for="b-code">6-digit code from the email</label>
+            <div class="row"><input type="text" id="b-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="123456" style="max-width:160px;letter-spacing:.2em;font-size:1.1rem"><button id="b-verify">Connect</button></div>
+          </div>
+          <p class="hint">Boekenwurm's sign-in email has a link and a 6-digit code. Type the code here: no other setup needed. (The link only works here if <code>${esc(s.bw.callback)}</code> is in Supabase's Redirect URLs; otherwise it just signs you in to Boekenwurm.)</p>
           <div class="row">${s.bw.signed_in ? '<button class="ghost" id="b-test">Test: today\'s reading</button><button class="danger" id="b-out">Sign out</button>' : ''}</div>
           <div id="b-msg" class="hint"></div>
           <label for="b-ppp">EPUB paragraphs per "page"</label><input type="number" id="b-ppp" min="1" max="20" value="${s.bw_paragraphs_per_page}" style="max-width:120px">
@@ -1037,7 +1041,16 @@ async function viewSettings() {
   $('#a-test').onclick = (e) => guard(async () => { const d = await api('/api/anki/decks'); $('#a-out').innerHTML = d.length ? 'Decks: ' + d.map(esc).join(' · ') : 'No decks found.'; }, e.target);
   $('#sp-save').onclick = (e) => guard(() => save({ speaking_prompts: $('#sp').value.split('\n') }), e.target);
   $('#b-save').onclick = (e) => guard(async () => { await save({ bw_url: $('#b-url').value.trim(), bw_key: $('#b-key').value.trim() }); viewSettings(); }, e.target);
-  $('#b-login').onclick = (e) => guard(async () => { await post('/api/bw/login', { email: $('#b-email').value.trim() }); $('#b-msg').innerHTML = '<span class="ok">Sent! Open the link in the email on this computer.</span>'; }, e.target);
+  $('#b-login').onclick = (e) => guard(async () => {
+    await post('/api/bw/login', { email: $('#b-email').value.trim() });
+    $('#b-codebox').hidden = false; $('#b-code').focus();
+    $('#b-msg').innerHTML = '<span class="ok">Sent! Check your email and type the 6-digit code above.</span>';
+  }, e.target);
+  $('#b-verify').onclick = (e) => guard(async () => {
+    await post('/api/bw/code', { code: $('#b-code').value });
+    toast('Boekenwurm connected.'); viewSettings();
+  }, e.target);
+  $('#b-code').onkeydown = (ev) => { if (ev.key === 'Enter') $('#b-verify').click(); };
   if ($('#b-out')) $('#b-out').onclick = (e) => guard(async () => { await post('/api/bw/logout'); viewSettings(); }, e.target);
   if ($('#b-test')) $('#b-test').onclick = (e) => guard(async () => { const r = await api('/api/bw/test'); $('#b-msg').textContent = `Today: ${r.reading.pages} pages · ${r.reading.paragraphs} paragraphs · ${r.reading.minutes} min · ${r.reading.sessions} sessions · ${r.cards} cards reviewed`; }, e.target);
   $('#b-ppp-save').onclick = (e) => guard(() => save({ bw_paragraphs_per_page: +$('#b-ppp').value }), e.target);

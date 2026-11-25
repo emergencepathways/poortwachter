@@ -2,9 +2,11 @@
 and flashcard reviews with your own account. Row-level security means this
 can only ever see your own rows, and Poortwachter only reads.
 
-Sign-in uses Supabase's email link with PKCE: the link in the email comes back
-to http://127.0.0.1:7623/bw/callback, so that URL must be in the Supabase
-project's Redirect URLs (Authentication → URL Configuration).
+Sign-in uses the same email Boekenwurm sends: type its 6-digit code into
+Poortwachter (simplest), or open its link on this computer. The link only
+comes back to Poortwachter if http://127.0.0.1:7623/bw/callback is in the
+Supabase project's Redirect URLs (Authentication → URL Configuration); the
+code works without that.
 """
 
 import base64
@@ -61,12 +63,44 @@ def start_login(email):
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     db.set_setting("bw_email", email)
     db.set_setting("bw_session", {"pkce_verifier": verifier})
+    try:
+        _send_otp(url, key, email, challenge)
+    except BWError as e:
+        msg = str(e).lower()
+        if "signup" in msg or "not allowed" in msg or "not found" in msg:
+            raise BWError("No Boekenwurm account uses that email. Use the address you sign in to Boekenwurm with.") from None
+        if "429" in msg or "rate" in msg:
+            raise BWError("Supabase is limiting sign-in emails right now (its built-in mail allows only a few an "
+                          "hour). Wait a bit, or use a code from an email you already have, if it's under an hour old.") from None
+        raise
+
+
+def _send_otp(url, key, email, challenge):
     _request("POST", f"{url}/auth/v1/otp?redirect_to={urllib.parse.quote(CALLBACK, safe='')}", key, {
         "email": email,
         "create_user": False,
         "code_challenge": challenge,
         "code_challenge_method": "s256",
     })
+
+
+def finish_login_otp(code):
+    """The 6-digit code from the sign-in email."""
+    url, key = _conf()
+    email = db.get_setting("bw_email")
+    code = "".join(ch for ch in str(code) if ch.isdigit())
+    if not email:
+        raise BWError("Send the sign-in email first.")
+    if len(code) < 6:
+        raise BWError("Type the 6-digit code from the email.")
+    try:
+        tok = _request("POST", f"{url}/auth/v1/verify", key, {"type": "email", "email": email, "token": code})
+    except BWError as e:
+        if " 403" in str(e) or "expired" in str(e).lower() or "invalid" in str(e).lower():
+            raise BWError("That code didn't work: it may be mistyped, used already, or expired "
+                          "(codes last about an hour). Send a new email and use the newest code.") from None
+        raise
+    _store(tok)
 
 
 def finish_login_code(code):
