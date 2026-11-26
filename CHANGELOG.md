@@ -2,6 +2,10 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [3.2.1] - 2026-11-26
+
+- Fix: connecting to Boekenwurm failed with "connect.json answered 403". Cloudflare, which hosts Boekenwurm, refuses Python's default user agent; Poortwachter now names itself.
+
 ## [3.2.0] - 2026-11-26
 
 Needs Boekenwurm with migration 0015.

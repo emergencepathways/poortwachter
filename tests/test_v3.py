@@ -44,6 +44,8 @@ class FakeBoekenwurm(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if "Python-urllib" in (self.headers.get("User-Agent") or ""):
+            return self._send({}, 403)  # as Cloudflare does
         if self.path == "/connect.json":
             port = self.server.server_port
             return self._send({"api": 1, "supabase_url": f"http://127.0.0.1:{port}", "publishable_key": "pub"})

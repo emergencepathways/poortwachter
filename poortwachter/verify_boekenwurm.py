@@ -47,7 +47,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config, db, roster
+from . import __version__, config, db, roster
+
+# Cloudflare, which hosts Boekenwurm, turns away Python's default "Python-urllib" user agent with a 403.
+USER_AGENT = f"Poortwachter/{__version__} (+https://github.com/emergencepathways/poortwachter)"
 
 CALLBACK = f"http://{config.HOST}:{config.PORT}/bw/callback"
 DEFAULT_SITE = "https://boekenwurm.pages.dev"
@@ -66,7 +69,8 @@ def _conf():
 
 
 def _request(method, url, key, body=None, token=None, timeout=20):
-    headers = {"apikey": key, "Content-Type": "application/json", "Accept": "application/json"}
+    headers = {"apikey": key, "Content-Type": "application/json", "Accept": "application/json",
+               "User-Agent": USER_AGENT}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     data = json.dumps(body).encode() if body is not None else None
@@ -182,11 +186,14 @@ def status():
 
 
 def _get_json(url, timeout=15):
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as e:
+        if e.code == 403:
+            raise BWError(f"{url} refused Poortwachter (403). Update Poortwachter (poortwachter-update); if it "
+                          "still happens, Boekenwurm's host is blocking it.") from None
         raise BWError(f"{url} answered {e.code}.") from None
     except urllib.error.URLError as e:
         raise BWError(f"Couldn't reach {url}: {e.reason}") from None
