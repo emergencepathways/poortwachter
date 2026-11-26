@@ -11,9 +11,10 @@ A personal Linux Mint app that keeps Steam closed until the owner's daily Dutch 
   `watchdog.py` (closes Steam; `Jobs` runs calendar import), `server.py` (local web app + JSON API
   on 127.0.0.1:7623), `__main__.py` (CLI), `ical.py` (calendar import → sessions, the plan as a local feed),
   `grammar.py` (LanguageTool hints), `diary.py` (Boekenwurm's 20 diary prompts).
-- Boekenwurm: paired through Boekenwurm's Connected apps (its `docs/CONNECTED_APPS.md`, migrations 0013 + 0014):
-  Poortwachter reads `connect.json`, trades a pairing code for a token (`claim_pairing_code`, which answers
-  `{error}` instead of raising), waits for the reader to allow it, then calls
+- Boekenwurm: connected through Boekenwurm's Connected apps (its `docs/CONNECTED_APPS.md`, migrations 0013-0015) by
+  a browser handoff with PKCE: `/boekenwurm/connect` → `link_start()` (only the configured Boekenwurm address; the
+  verifier stays in memory) → Boekenwurm, where the owner clicks Allow → `/boekenwurm/linked` → `link_finish()`
+  (state must be ours; `connect.json`, then `claim_app_link(code, verifier)` → token). Then it calls
   `connection_summary(p_token, p_day, p_tz, p_start_hour=2)` for today only (`{error: pending|gone}` when not
   allowed / gone). Boekenwurm stores nothing for Poortwachter: no calendar. Boekenwurm will remove Connected apps
   before its public release (its `docs/PRELAUNCH.md`), so Boekenwurm tasks must fail with a clear message, never

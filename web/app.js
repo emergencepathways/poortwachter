@@ -1078,15 +1078,12 @@ async function viewSettings() {
       <div>
         <div class="card">
           <h2>Boekenwurm</h2>
-          ${s.bw.paired ? `${s.bw.approved ? `<p class="ok">✓ Connected as “${esc(s.bw.paired_name)}”</p>` : `<p><b>Almost there:</b> in Boekenwurm, <b>Allow</b> the request from “${esc(s.bw.paired_name)}” (Account → Settings → Connected apps), then press Test below.</p>`}
+          ${s.bw.paired ? `${s.bw.approved ? `<p class="ok">✓ Connected as “${esc(s.bw.paired_name)}”</p>` : `<p><b>Almost there:</b> in Boekenwurm, <b>Allow</b> the request from “${esc(s.bw.paired_name)}” (Account → Experimental → Connected apps), then press Test below.</p>`}
             <p class="muted">Poortwachter sees today's numbers only: pages, active reading minutes, cards, whether you wrote in the diary, and which reading was at or above your level. Never your books or diary text. Unused for 90 days, the connection expires; disconnect it any time in Boekenwurm.</p>
             <div class="row"><button class="ghost" id="b-test">Test: today's numbers</button><button class="danger" id="b-unpair">Unpair</button></div>`
-          : `<ol class="steps">
-              <li>Open Boekenwurm → <b>Account → Settings → Connected apps</b> → <b>Pair Poortwachter</b>, read what will be shared and agree.</li>
-              <li>Type the code it shows here (valid 10 minutes):</li>
-              <li>Back in Boekenwurm, <b>Allow</b> Poortwachter's request.</li>
-            </ol>
-            <div class="row"><input type="text" id="b-pair" placeholder="K7QM-3XPA" maxlength="12" autocomplete="off" spellcheck="false" style="max-width:200px;letter-spacing:.15em;font-size:1.15rem;text-transform:uppercase"><button id="b-pair-go">Pair</button></div>
+          : `<p>Connect once and Boekenwurm reading, flashcards and the diary check themselves. Nothing to type: your browser opens Boekenwurm, you read what will be shared and click <b>Allow</b>, and it comes back here.</p>
+            <div class="row"><a class="btn" href="/boekenwurm/connect" target="_blank" rel="noopener">Connect to Boekenwurm</a></div>
+            <p class="hint">Or start in Boekenwurm: <b>Account → Experimental → Connected apps → Connect Poortwachter on this computer</b>. Sign in to Boekenwurm in your browser first. Only the owner's Boekenwurm account can connect apps.</p>
             ${s.bw.signed_in ? `<p class="hint">You're also signed in the older way (${esc(s.bw.email)}). That still works, but pairing adds active reading time, levels and the diary.</p>` : ''}`}
           <div id="b-msg" class="hint"></div>
           <details style="margin-top:12px"><summary>Advanced</summary>
@@ -1144,10 +1141,6 @@ async function viewSettings() {
   $('#a-save').onclick = (e) => guard(async () => { await save({ anki_collection: $('#a-path').value.trim() }); viewSettings(); }, e.target);
   $('#a-test').onclick = (e) => guard(async () => { const d = await api('/api/anki/decks'); $('#a-out').innerHTML = d.length ? 'Decks: ' + d.map(esc).join(' · ') : 'No decks found.'; }, e.target);
   $('#sp-save').onclick = (e) => guard(() => save({ speaking_prompts: $('#sp').value.split('\n') }), e.target);
-  if ($('#b-pair-go')) {
-    $('#b-pair-go').onclick = (e) => guard(async () => { await post('/api/bw/pair', { code: $('#b-pair').value }); toast('Code accepted. Now allow Poortwachter in Boekenwurm.'); viewSettings(); }, e.target);
-    $('#b-pair').onkeydown = (ev) => { if (ev.key === 'Enter') $('#b-pair-go').click(); };
-  }
   if ($('#b-unpair')) $('#b-unpair').onclick = (e) => guard(async () => {
     if (!confirm('Unpair Poortwachter from Boekenwurm? Boekenwurm tasks will stop being checked until you pair again. (To cut it off completely, also Disconnect it in Boekenwurm.)')) return;
     await post('/api/bw/unpair'); viewSettings();

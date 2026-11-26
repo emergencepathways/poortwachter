@@ -1,13 +1,24 @@
 """Boekenwurm: pair once, then ask for a daily summary of numbers.
 
-Pairing (Boekenwurm's Connected apps, migrations 0013 + 0014; its
-docs/CONNECTED_APPS.md): in Boekenwurm → Account → Settings → Connected apps →
-"Pair Poortwachter", the reader agrees to what is shared and gets a code;
-Poortwachter finds the database in <Boekenwurm address>/connect.json and
-trades the code for its own token; the reader then allows the request in
-Boekenwurm. The token opens only today's numbers (pages, active reading
-minutes, cards reviewed, diary yes/no, also counted at or above the reader's
-level). Unused for 90 days, the connection expires.
+Connecting (Boekenwurm's Connected apps, migrations 0013-0015; its
+docs/CONNECTED_APPS.md) is a browser handoff with PKCE, the way desktop apps
+sign in (RFC 8252, RFC 7636), so there is nothing to type:
+
+1. Boekenwurm → Account → Experimental → "Connect Poortwachter" (or Connect in
+   Poortwachter's Settings) opens http://127.0.0.1:7623/boekenwurm/connect.
+2. link_start(): only for the Boekenwurm address Poortwachter is set to, it
+   keeps a one-time secret (the verifier) and sends the browser to Boekenwurm
+   with its SHA-256 (the challenge) and a random state.
+3. Signed in, the reader sees what will be shared and clicks Allow; the browser
+   comes back to /boekenwurm/linked with a one-time code.
+4. link_finish(): the state must be one made here (no other site can start a
+   connection), then <site>/connect.json gives the database, and
+   claim_app_link(code, verifier) gives the token. A code alone is useless.
+
+The token opens only today's numbers (pages, active reading minutes, cards
+reviewed, diary yes/no, also counted at or above the reader's level). Unused
+for 90 days, the connection expires. Only the owner's Boekenwurm account can
+connect apps.
 
 Boekenwurm keeps this feature for the owner's own use only and removes it
 before a public release, so every Boekenwurm task here must keep failing
@@ -197,34 +208,64 @@ def discover(site=None):
     return site, info["supabase_url"].rstrip("/"), info["publishable_key"]
 
 
-def pair(code, site=None, name=None):
-    code = (code or "").strip()
-    if len(code.replace("-", "").replace(" ", "")) < 8:
-        raise BWError("Type the 8-character code Boekenwurm shows (like K7QM-3XPA).")
-    site, url, key = discover(site)
-    name = name or f"Poortwachter on {socket.gethostname()}"[:80]
+LINK_MINUTES = 10
+_links = {}  # state -> {"verifier", "site", "name", "at"}: requests this computer started, in memory only
+
+
+def _b64url_sha256(text):
+    return base64.urlsafe_b64encode(hashlib.sha256(text.encode()).digest()).rstrip(b"=").decode()
+
+
+def link_start(site=None):
+    """Start connecting: where to send the browser (Boekenwurm, with a challenge). Only for the address set here."""
+    saved = (db.get_setting("bw_site") or DEFAULT_SITE).strip().rstrip("/")
+    asked = (site or saved).strip().rstrip("/")
+    if asked != saved:
+        raise BWError(f"Poortwachter is set to connect to {saved}, not {asked}. If {asked} is your Boekenwurm, "
+                      "change the address in Poortwachter → Settings → Boekenwurm → Advanced first.")
+    if not saved.startswith("https://") and not saved.startswith("http://127.0.0.1"):
+        raise BWError("The Boekenwurm address should start with https://")
+    now = time.time()
+    for k, v in list(_links.items()):
+        if now - v["at"] > LINK_MINUTES * 60:
+            del _links[k]
+    while len(_links) >= 20:
+        del _links[min(_links, key=lambda k: _links[k]["at"])]
+    verifier = secrets.token_urlsafe(48)
+    state = secrets.token_urlsafe(24)
+    name = f"Poortwachter on {socket.gethostname()}"[:80]
+    _links[state] = {"verifier": verifier, "site": saved, "name": name, "at": now}
+    q = urllib.parse.urlencode({"connect": "poortwachter", "challenge": _b64url_sha256(verifier), "state": state,
+                                "name": name})
+    return f"{saved}/?{q}"
+
+
+def link_finish(code, state):
+    """Boekenwurm sent the browser back with a code: trade it, with the secret kept here, for the token."""
+    link = _links.pop(state or "", None)
+    if not link or time.time() - link["at"] > LINK_MINUTES * 60:
+        raise BWError("This connection request has expired or wasn't started on this computer. "
+                      "Start again with Connect in Boekenwurm (Account → Experimental).")
+    if not isinstance(code, str) or not code or len(code) > 200:
+        raise BWError("Boekenwurm didn't send a code. Start again.")
+    site, url, key = discover(link["site"])
     try:
-        r = _request("POST", f"{url}/rest/v1/rpc/claim_pairing_code", key, {"p_code": code, "p_name": name})
+        r = _request("POST", f"{url}/rest/v1/rpc/claim_app_link", key, {"p_code": code, "p_verifier": link["verifier"]})
     except BWError as e:
-        if "isn't valid" in str(e) or "expired" in str(e):
-            raise BWError("That code didn't work: it may be mistyped, used already or older than 10 minutes. "
-                          "Make a new one in Boekenwurm.") from None
-        if "claim_pairing_code" in str(e) or "404" in str(e):
-            raise BWError("That Boekenwurm's database isn't ready for pairing yet (it needs migration 0013).") from None
+        if "claim_app_link" in str(e) or "404" in str(e):
+            raise BWError("That Boekenwurm's database isn't ready for connecting yet (it needs migration 0015).") from None
         raise
     if isinstance(r, dict) and r.get("error"):
-        if r["error"] == "too_many":
-            raise BWError("Too many wrong codes: wait 10 minutes, then make a new code in Boekenwurm.")
-        raise BWError("That code didn't work: it may be mistyped, used already or older than 10 minutes. "
-                      "Make a new one in Boekenwurm.")
+        raise BWError(r.get("message") or "Boekenwurm refused the connection. Start again.")
     if not isinstance(r, dict) or not r.get("token"):
-        raise BWError("Boekenwurm didn't return a connection. Try a new code.")
+        raise BWError("Boekenwurm didn't return a connection. Start again.")
     db.set_setting("bw_site", site)
     db.set_setting("bw_url", url)
     db.set_setting("bw_key", key)
-    db.set_setting("bw_pairing", {"token": r["token"], "id": r.get("connection_id"), "name": name, "at": time.time(),
-                                  "approved": r.get("status") != "pending"})
-    db.log("boekenwurm", f"paired as {name}")
+    db.set_setting("bw_pairing", {"token": r["token"], "id": r.get("connection_id"), "name": link["name"],
+                                  "at": time.time(), "approved": True})
+    _cache.clear()
+    db.log("boekenwurm", f"connected as {link['name']}")
     return status()
 
 

@@ -2,6 +2,14 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [3.2.0] - 2026-11-26
+
+Needs Boekenwurm with migration 0015.
+
+- **Connect to Boekenwurm in one click, nothing to type**: Settings → Boekenwurm → **Connect to Boekenwurm**, or in Boekenwurm → Account → Experimental → Connected apps → **Connect Poortwachter on this computer**. Your browser goes to Boekenwurm, you read what will be shared and click **Allow**, and it comes back to Poortwachter, connected. No code, no database address or key.
+- How it stays safe (PKCE, the way desktop apps sign in): Poortwachter keeps a one-time secret and sends Boekenwurm only its fingerprint; the code that comes back only works together with that secret, and only for a request this computer started, and only for the Boekenwurm address set in Settings.
+- Typing a pairing code is gone. A connection made the old way keeps working.
+
 ## [3.1.0] - 2026-11-26
 
 Follows Boekenwurm's privacy hardening of Connected apps (migration 0014). Needs that migration.

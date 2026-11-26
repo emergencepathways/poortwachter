@@ -6,6 +6,7 @@ X-Poortwachter header (a web page on another site can't add it without a
 CORS preflight, which this server never approves)."""
 
 import datetime as dt
+import html
 import json
 import mimetypes
 import os
@@ -498,12 +499,6 @@ def api_bw_login(h, m):
     return {"sent": True}
 
 
-@route("POST", r"/api/bw/pair")
-def api_bw_pair(h, m):
-    b = h.json()
-    return verify_boekenwurm.pair(b.get("code", ""), b.get("site") or None)
-
-
 @route("POST", r"/api/bw/unpair")
 def api_bw_unpair(h, m):
     return verify_boekenwurm.unpair()
@@ -706,6 +701,21 @@ class Handler(BaseHTTPRequestHandler):
             while chunk := f.read(1 << 20):
                 self.wfile.write(chunk)
 
+    def send_page(self, title, message, ok=True):
+        """A small page of its own, for the Boekenwurm handoff (outside the app, in the browser)."""
+        colour = "#1d7a46" if ok else "#a12c2c"
+        data = (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+                f'<title>Poortwachter</title><body style="font:17px/1.5 system-ui,sans-serif;max-width:34em;margin:12vh auto;padding:0 1em">'
+                f'<h1 style="color:{colour};font-size:1.5em">{html.escape(title)}</h1><p>{html.escape(message)}</p>'
+                f'<p><a href="/#settings">Open Poortwachter</a></p></body></html>').encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(data)
+
     def redirect(self, location):
         self.send_response(302)
         self.send_header("Location", location)
@@ -752,6 +762,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/bw/callback":
             self._bw_callback()
             return
+        if path in ("/boekenwurm/connect", "/boekenwurm/linked"):
+            self._bw_link(path)
+            return
         mp = re.match(r"^/files/textbook/(\d+)/p/(\d+)\.png$", path)
         if mp:
             try:
@@ -788,6 +801,24 @@ class Handler(BaseHTTPRequestHandler):
         if config.WEB_DIR.resolve() not in target.parents or not target.is_file():
             target = config.WEB_DIR / "index.html"  # single-page app
         self.send_file(target)
+
+    def _bw_link(self, path):
+        """Connecting to Boekenwurm in the browser (verify_boekenwurm.link_start / link_finish)."""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        one = lambda k: (q.get(k) or [""])[0]  # noqa: E731
+        try:
+            if path == "/boekenwurm/connect":
+                self.redirect(verify_boekenwurm.link_start(one("site") or None))
+                return
+            if one("error"):
+                self.send_page("Not connected", "Boekenwurm didn't connect. Start again when you're ready.", ok=False)
+                return
+            st = verify_boekenwurm.link_finish(one("code"), one("state"))
+            self.send_page("Connected to Boekenwurm",
+                           f"Poortwachter is connected as “{st['paired_name']}”. Boekenwurm tasks now check today's "
+                           "numbers by themselves. You can close this tab.")
+        except verify_boekenwurm.BWError as e:
+            self.send_page("Not connected", str(e), ok=False)
 
     def _bw_callback(self):
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)

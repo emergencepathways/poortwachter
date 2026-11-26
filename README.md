@@ -119,8 +119,9 @@ The full install and management guide is the "Poortwachter: install & management
 
 ## What's new in v3
 
-- **Pair with Boekenwurm** (Settings → Boekenwurm): in Boekenwurm → Account → Settings → Connected apps, agree to
-  what is shared, type the code here, then **Allow** the request in Boekenwurm. Boekenwurm reading then counts by
+- **Connect to Boekenwurm** (Settings → Boekenwurm → **Connect to Boekenwurm**, or in Boekenwurm → Account →
+  Experimental → Connected apps): your browser goes to Boekenwurm, you read what is shared and click **Allow**, and
+  it comes back connected. Nothing to type (3.2.0). Boekenwurm reading then counts by
   **pages or active minutes**, at or above your level, plus flashcards and the Boekenwurm diary. Only today's numbers
   are shared, never text or history; unused for 90 days, the connection expires. (Connected apps are for the owner's
   own use and will be removed from Boekenwurm before it goes public; the Boekenwurm tasks then report that and the

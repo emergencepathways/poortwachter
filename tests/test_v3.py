@@ -1,14 +1,20 @@
 """Tests for v3: Boekenwurm pairing and its daily summary, several Anki decks, the diary prompts, LanguageTool hints,
 calendars in (iCal → sessions) and out (the plan as a local feed), and textbook pages as images.
-The fake Boekenwurm behaves like migrations 0013 + 0014: claim → pending → allowed, today's numbers only."""
+The fake Boekenwurm behaves like migrations 0013-0015: a browser handoff with PKCE, today's numbers only."""
 
+import base64
 import datetime as dt
+import hashlib
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+import secrets
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -27,7 +33,7 @@ class FakeBoekenwurm(BaseHTTPRequestHandler):
     calls = []
     revoked = False
     approved = True
-    too_many = False
+    links = {}  # code -> challenge, as link_app() would keep them
 
     def _send(self, obj, code=200):
         data = json.dumps(obj).encode()
@@ -46,12 +52,12 @@ class FakeBoekenwurm(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeBoekenwurm.calls.append((self.path, body, self.headers.get("apikey")))
-        if self.path == "/rest/v1/rpc/claim_pairing_code":
-            if FakeBoekenwurm.too_many:
-                return self._send({"error": "too_many", "message": "Too many tries."})
-            if body["p_code"].replace("-", "").upper() != "K7QM3XPA":
-                return self._send({"error": "invalid", "message": "That code isn't valid or has expired."})
-            return self._send({"token": TOKEN, "connection_id": "c1", "app": "poortwachter", "status": "pending"})
+        if self.path == "/rest/v1/rpc/claim_app_link":
+            challenge = FakeBoekenwurm.links.pop(body["p_code"], None)
+            made = base64.urlsafe_b64encode(hashlib.sha256(body["p_verifier"].encode()).digest()).rstrip(b"=").decode()
+            if challenge is None or challenge != made:
+                return self._send({"error": "invalid", "message": "That connection has expired or was already used."})
+            return self._send({"token": TOKEN, "connection_id": "c1", "app": "poortwachter", "status": "ok"})
         if self.path == "/rest/v1/rpc/connection_summary":
             if body.get("p_token") != TOKEN or FakeBoekenwurm.revoked:
                 return self._send({"error": "gone", "message": "This app is no longer connected."})
@@ -61,13 +67,18 @@ class FakeBoekenwurm(BaseHTTPRequestHandler):
         self._send({}, 404)
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
 class BoekenwurmPairingTests(Base):
     def setUp(self):
         super().setUp()
         FakeBoekenwurm.calls = []
         FakeBoekenwurm.revoked = False
         FakeBoekenwurm.approved = True
-        FakeBoekenwurm.too_many = False
+        FakeBoekenwurm.links = {}
         FakeBoekenwurm.summary = {"version": 2, "pages": 9, "pages_at_level": 3, "active_minutes": 31.5,
                                   "active_minutes_at_level": 12.0, "cards_reviewed": 25, "diary_done": True}
         self.srv = HTTPServer(("127.0.0.1", 0), FakeBoekenwurm)
@@ -78,17 +89,42 @@ class BoekenwurmPairingTests(Base):
         self.srv.shutdown()
         super().tearDown()
 
-    def test_pair_and_checks(self):
+    def connect(self, allow=True):
+        """The whole handoff: Poortwachter → Boekenwurm (the reader allows) → back to Poortwachter."""
+        from poortwachter import db
+        db.set_setting("bw_site", self.site)
+        url = urllib.parse.urlparse(self.bw.link_start())
+        q = dict(urllib.parse.parse_qsl(url.query))
+        code = secrets.token_hex(30)
+        if allow:
+            FakeBoekenwurm.links[code] = q["challenge"]  # link_app()
+        return q, code, self.bw.link_finish(code, q["state"])
+
+    def test_link_and_checks(self):
         bw = self.bw
-        with self.assertRaises(bw.BWError) as cm:
-            bw.pair("ZZZZ-ZZZZ", self.site)
-        self.assertIn("didn't work", str(cm.exception))
-        st = bw.pair("k7qm-3xpa", self.site)
-        self.assertTrue(st["paired"])
-        self.assertFalse(st["approved"])  # until the reader allows it in Boekenwurm
+        from poortwachter import db
+        db.set_setting("bw_site", self.site)
+        url = urllib.parse.urlparse(bw.link_start())
+        q = dict(urllib.parse.parse_qsl(url.query))
+        # Only the challenge (SHA-256 of the secret) leaves this computer, with a random state and a name.
+        self.assertEqual(f"{url.scheme}://{url.netloc}", self.site)
+        self.assertEqual(q["connect"], "poortwachter")
+        self.assertRegex(q["challenge"], r"^[A-Za-z0-9_-]{43}$")
+        self.assertRegex(q["state"], r"^[A-Za-z0-9_-]{16,64}$")
+        self.assertTrue(q["name"].startswith("Poortwachter on "))
+        secret = bw._links[q["state"]]["verifier"]
+        self.assertNotIn(secret, url.query)
+        code = secrets.token_hex(30)
+        FakeBoekenwurm.links[code] = q["challenge"]
+        st = bw.link_finish(code, q["state"])
+        self.assertTrue(st["paired"] and st["approved"])
         self.assertTrue(st["paired_name"].startswith("Poortwachter on "))
         path, body, key = FakeBoekenwurm.calls[-1]
-        self.assertEqual(key, "pub")
+        self.assertEqual((path, key), ("/rest/v1/rpc/claim_app_link", "pub"))
+        self.assertEqual(body["p_verifier"], secret)
+        # The state is used up: the same answer can't be replayed.
+        with self.assertRaises(bw.BWError):
+            bw.link_finish(code, q["state"])
         day = self.roster.today()
         # 3 pages at level < 5, 12 min at level < 20: not yet
         r = bw.check_reading({"pages": 5, "minutes": 20, "at_level": True}, day)
@@ -111,42 +147,80 @@ class BoekenwurmPairingTests(Base):
         self.assertEqual(sent["p_day"], day)
         self.assertEqual(sent["p_start_hour"], 2)
         self.assertTrue(sent["p_tz"])
-        self.assertTrue(bw.status()["approved"])  # a summary means the reader allowed it
+
         # The summary is cached for a minute
         n = len(FakeBoekenwurm.calls)
         bw.check_cards({"cards": 1}, day)
         self.assertEqual(len(FakeBoekenwurm.calls), n)
 
-    def test_waiting_for_approval(self):
+    def test_only_requests_started_here(self):
         bw = self.bw
-        FakeBoekenwurm.approved = False
-        bw.pair("K7QM-3XPA", self.site)
+        with self.assertRaises(bw.BWError) as cm:
+            bw.link_finish("ab" * 30, "made-up-state-made-up-state")
+        self.assertIn("wasn't started on this computer", str(cm.exception))
+        # Another site can't use Poortwachter to start a connection to itself.
+        with self.assertRaises(bw.BWError) as cm:
+            bw.link_start("https://evil.example")
+        self.assertIn("set to connect to", str(cm.exception))
+
+    def test_code_without_allow(self):
+        with self.assertRaises(self.bw.BWError) as cm:
+            self.connect(allow=False)
+        self.assertIn("expired or was already used", str(cm.exception))
+        self.assertFalse(self.bw.status()["paired"])
+
+    def test_old_pending_connection(self):
+        bw = self.bw
+        self.connect()
+        FakeBoekenwurm.approved = False  # a connection from the typed-code days, never allowed
         r = bw.check_diary({}, self.roster.today())
         self.assertFalse(r["ok"])
         self.assertIn("allow Poortwachter", r["message"])
-        self.assertTrue(bw.status()["paired"])  # still paired, just waiting
-
-    def test_too_many_tries(self):
-        FakeBoekenwurm.too_many = True
-        with self.assertRaises(self.bw.BWError) as cm:
-            self.bw.pair("K7QM-3XPA", self.site)
-        self.assertIn("wait 10 minutes", str(cm.exception))
 
     def test_disconnected_in_boekenwurm(self):
         bw = self.bw
-        bw.pair("K7QM-3XPA", self.site)
+        self.connect()
         FakeBoekenwurm.revoked = True
         r = bw.check_diary({}, self.roster.today())
         self.assertFalse(r["ok"])
         self.assertIn("disconnected", r["message"])
         self.assertFalse(bw.status()["paired"])
 
-    def test_site_without_pairing(self):
+    def test_site_without_connect_json(self):
+        from poortwachter import db
+        db.set_setting("bw_site", "http://127.0.0.1:1")
+        state = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.bw.link_start()).query))["state"]
         with self.assertRaises(self.bw.BWError):
-            self.bw.pair("K7QM-3XPA", "http://127.0.0.1:1")  # nothing there
+            self.bw.link_finish("ab" * 30, state)  # nothing there
+
+    def test_pages_in_the_browser(self):
+        """The two addresses Boekenwurm and the browser use, through the real web server."""
+        from poortwachter import db, server
+        db.set_setting("bw_site", self.site)
+        srv = HTTPServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = f"http://127.0.0.1:{srv.server_port}"
+            opener = urllib.request.build_opener(NoRedirect)
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                opener.open(f"{base}/boekenwurm/connect?site={urllib.parse.quote(self.site)}")
+            self.assertEqual(cm.exception.code, 302)
+            to = cm.exception.headers["Location"]
+            self.assertTrue(to.startswith(self.site + "/?connect=poortwachter&"))
+            q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(to).query))
+            code = secrets.token_hex(30)
+            FakeBoekenwurm.links[code] = q["challenge"]
+            page = urllib.request.urlopen(f"{base}/boekenwurm/linked?code={code}&state={q['state']}").read().decode()
+            self.assertIn("Connected to Boekenwurm", page)
+            self.assertTrue(self.bw.status()["paired"])
+            page = urllib.request.urlopen(f"{base}/boekenwurm/linked?code={code}&state=<script>").read().decode()
+            self.assertIn("Not connected", page)
+            self.assertNotIn("<script>", page)
+        finally:
+            srv.shutdown()
 
     def test_diary_task_through_actions(self):
-        self.bw.pair("K7QM-3XPA", self.site)
+        self.connect()
         r = self.roster
         aid = next(a["id"] for a in r.activities() if a["kind"] == "bw_diary")
         tid = r.add_task(r.today(), aid)
@@ -156,7 +230,7 @@ class BoekenwurmPairingTests(Base):
     def test_no_calendar_is_published(self):
         from poortwachter import ical
         self.assertFalse(hasattr(ical, "publish"))
-        self.bw.pair("K7QM-3XPA", self.site)
+        self.connect()
         self.assertFalse([c for c in FakeBoekenwurm.calls if "calendar" in c[0]])
 
 
