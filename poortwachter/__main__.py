@@ -32,6 +32,7 @@ def serve():
     db.log("service", "started")
     wd = watchdog.Watchdog()
     wd.start()
+    watchdog.Jobs().start()
 
     def stop(*_):
         wd.stop.set()

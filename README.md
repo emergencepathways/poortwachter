@@ -1,4 +1,4 @@
-# Poortwachter v2
+# Poortwachter
 
 *Eerst Nederlands, dan spelen.* Steam stays closed until the day's Dutch study roster is done. The day resets at **02:00**.
 
@@ -116,3 +116,13 @@ You're the admin on your own machine, so this is friction, not a prison. Stoppin
 `est_min` is optional (default: the sum of the items' minutes). Page numbers are **printed** page numbers; the page offset converts them to PDF pages.
 
 The full install and management guide is the "Poortwachter: install & management guide" doc.
+
+## What's new in v3
+
+- **Pair with Boekenwurm** (Settings → Boekenwurm): type the code from Boekenwurm → Account → Settings → Connected apps.
+  Boekenwurm reading then counts by **pages or active minutes**, at or above your level, plus flashcards and the
+  Boekenwurm diary. Only numbers are shared, never text.
+- **Diary prompts and LanguageTool grammar hints** on writing tasks; **several Anki decks** per activity.
+- **Calendars** (Settings → Calendars): calendar events become sessions by keyword; your plan can be subscribed to in
+  Google Calendar (published through Boekenwurm).
+- **App window**: "Poortwachter" in the menu opens its own window.

@@ -27,9 +27,13 @@ USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 VERSION=$(PYTHONPATH="$HERE" python3 -c 'import poortwachter; print(poortwachter.__version__)')
 echo "==> Installing Poortwachter $VERSION for user: $USER_NAME"
 
-echo "==> Packages (python3, git, poppler-utils, qpdf, ffmpeg, libnotify-bin)"
+echo "==> Packages (python3, git, poppler-utils, qpdf, ffmpeg, libnotify-bin, the app window's WebKit)"
 apt-get update -qq || true
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 git poppler-utils qpdf ffmpeg libnotify-bin >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 git poppler-utils qpdf ffmpeg libnotify-bin python3-gi >/dev/null
+# The app window: WebKitGTK 4.1 (Mint 21.2+/22), or 4.0 on older systems. Without it the menu opens the browser.
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gir1.2-webkit2-4.1 >/dev/null 2>&1 \
+  || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gir1.2-webkit2-4.0 >/dev/null 2>&1 \
+  || echo "   (no WebKitGTK package found: Poortwachter will open in your browser instead of its own window)"
 
 PYV=$(python3 -c 'import sys; print(sys.version_info >= (3, 8))')
 [ "$PYV" = "True" ] || { echo "Python 3.8 or newer is needed."; exit 1; }
@@ -45,6 +49,7 @@ chmod -R u=rwX,go=rX /opt/poortwachter
 install -m 755 "$HERE/bin/poortwachter" /usr/local/bin/poortwachter
 install -m 755 "$HERE/bin/poortwachter-steam" /usr/local/bin/poortwachter-steam
 install -m 755 "$HERE/bin/poortwachter-update" /usr/local/bin/poortwachter-update
+install -m 755 "$HERE/bin/poortwachter-window" /usr/local/bin/poortwachter-window
 
 echo "==> Config /etc/poortwachter.conf"
 if [ ! -f /etc/poortwachter.conf ]; then
@@ -106,7 +111,7 @@ cat <<DONE
 
   ✓ Poortwachter is running.
 
-    Study app:      http://127.0.0.1:7623/   (also "Poortwachter" in the menu)
+    Study app:      "Poortwachter" in the menu (its own window), or http://127.0.0.1:7623/
     Status:         poortwachter status
     Update:         poortwachter-update   (as yourself, not sudo)
     Emergency key:  sudo poortwachter noodsleutel

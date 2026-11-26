@@ -101,16 +101,34 @@ def list_decks():
             return sorted(d["name"] for d in json.loads(row["decks"]).values())
 
 
+def deck_list(params):
+    """The decks an activity counts: several ({"decks": [...]}) or, in older activities, one ({"deck": "..."})."""
+    decks = params.get("decks")
+    if isinstance(decks, str):
+        decks = [d.strip() for d in decks.split(",")]
+    if not decks and params.get("deck"):
+        decks = [params["deck"]]
+    return [d for d in (decks or []) if d and d.strip()]
+
+
 def check(params, day):
     path = collection_path()
     if not path:
         return {"ok": False, "message": "No Anki collection found. Set its path in Settings."}
     target = int(params.get("reviews", 0) or 0)
     since_ms = int(roster.day_start_ts(day) * 1000)
+    names = deck_list(params)
     with _Snapshot(path) as conn:
-        dids = _deck_ids(conn, params.get("deck", ""))
-        if dids is not None and not dids:
-            return {"ok": False, "message": f"Deck “{params.get('deck')}” not found in Anki."}
+        dids = None
+        if names:
+            dids, missing = [], []
+            for n in names:
+                ids = _deck_ids(conn, n)
+                (dids.extend(ids) if ids else missing.append(n))
+            dids = sorted(set(dids))
+            if missing:
+                return {"ok": False, "message": "Not found in Anki: " + ", ".join(f"“{n}”" for n in missing)
+                                                + ". Check the decks in Library → Edit."}
         q = ("SELECT COUNT(*) FROM revlog r JOIN cards c ON c.id = r.cid "
              "WHERE r.id >= ? AND r.type IN (0, 1, 2, 3)")
         args = [since_ms]
@@ -132,7 +150,7 @@ def check(params, day):
             due_left = conn.execute(dq, dargs).fetchone()[0]
 
     ok = reviews >= target and (due_left is None or due_left == 0)
-    msg = f"{reviews} / {target} reviews today"
+    msg = f"{reviews} / {target} reviews today" + (f" in {len(names)} decks" if len(names) > 1 else "")
     if due_left is not None:
         msg += f" · {due_left} due cards left"
     return {"ok": ok, "message": msg, "value": reviews, "target": target, "due_left": due_left}

@@ -176,11 +176,15 @@ SPEAKING_PROMPTS = [
 DEFAULT_ACTIVITIES = [
     # name, category, kind, params, est_min, weight, in_pool, description
     ("Anki — daily reviews", "flashcards", "anki",
-     {"deck": "", "reviews": 50, "clear_due": False}, 15, 1.0, 1,
+     {"decks": [], "reviews": 50, "clear_due": False}, 15, 1.0, 1,
      "Do your Anki reviews. Counts once you've logged the target number of reviews today."),
-    ("Boekenwurm — read 5 pages", "reading", "bw_reading",
-     {"metric": "pages", "target": 5}, 20, 1.2, 1,
-     "Read in Boekenwurm. Finish or leave the session so it syncs, then press Check."),
+    ("Boekenwurm — read 5 pages or 20 minutes", "reading", "bw_reading",
+     {"pages": 5, "minutes": 20, "at_level": True}, 20, 1.2, 1,
+     "Read in Boekenwurm at or above your level: 5 pages or 20 minutes of active reading, whichever comes first. "
+     "Finish or leave the session so it syncs."),
+    ("Boekenwurm — diary entry", "writing", "bw_diary",
+     {}, 15, 0.8, 1,
+     "Write a diary entry in Boekenwurm (fine on your phone). Only the fact that you wrote is shared, never the text."),
     ("Boekenwurm — flashcards", "flashcards", "bw_cards",
      {"cards": 20}, 10, 1.0, 1,
      "Review your Boekenwurm study words."),
@@ -202,8 +206,8 @@ DEFAULT_ACTIVITIES = [
      {"min_seconds": 120, "prompt": "Lees een stuk uit je boek hardop voor."}, 8, 0.7, 1,
      "Read a passage of your book aloud, recorded."),
     ("Dagboek — diary entry", "writing", "note",
-     {"min_words": 60, "prompt": "Schrijf over je dag (minimaal 60 woorden)."}, 15, 0.9, 1,
-     "Write a short diary entry in Dutch."),
+     {"min_words": 60, "prompt_set": "diary"}, 15, 0.9, 1,
+     "Write a diary entry in Dutch to one of the 20 prompts, with free grammar hints."),
     ("Grammar sentences", "writing", "note",
      {"min_words": 40, "prompt": "Kies een grammaticaregel en schrijf vijf eigen zinnen ermee."}, 15, 0.7, 1,
      "Write five sentences practising one grammar rule."),
@@ -249,6 +253,13 @@ DEFAULT_SETTINGS = {
     "event_minimum_activity": 1,
     "plan_days_ahead": 7,
     "installed_day": None,           # set on first start: that day is free
+    "bw_site": "https://boekenwurm.pages.dev",
+    "bw_pairing": {},                # Boekenwurm connection token (never sent to the browser)
+    "bw_calendar": {},               # the published calendar feed's secret
+    "languagetool": True,            # grammar hints on writing tasks (the text goes to LanguageTool)
+    "ical_feeds": [],                # [{"url", "name"}]: calendars whose matching events become sessions
+    "ical_rules": [{"keyword": "italki", "kind": "italki"}, {"keyword": "taalgroep", "kind": "library"},
+                   {"keyword": "taalcafé", "kind": "other"}, {"keyword": "bibliotheek", "kind": "library"}],
     "pto_processed_through": None,
 }
 
@@ -299,6 +310,8 @@ def _migrate(conn):
     """Bring a database from an earlier version up to date."""
     if "event_id" not in _columns(conn, "tasks"):
         conn.execute("ALTER TABLE tasks ADD COLUMN event_id INTEGER")
+    if "ical_key" not in _columns(conn, "sessions"):
+        conn.execute("ALTER TABLE sessions ADD COLUMN ical_key TEXT")
     if "time" not in _columns(conn, "tasks"):
         conn.execute("ALTER TABLE tasks ADD COLUMN time TEXT NOT NULL DEFAULT ''")
     # v1 kept single exercises; v2 groups them into sets.
@@ -309,6 +322,33 @@ def _migrate(conn):
              json.dumps([{"label": ex["label"], "page_from": ex["page_from"], "page_to": ex["page_to"],
                           "minutes": 25}]), 25, ex["done"]))
     conn.execute("DELETE FROM exercises")
+    # v3: Boekenwurm reading counts pages OR active minutes at your level; a Boekenwurm diary task;
+    # Poortwachter's own diary uses the 20 prompts.
+    for r in conn.execute("SELECT id, params FROM activities WHERE kind = 'bw_reading'").fetchall():
+        p = json.loads(r["params"])
+        if "metric" in p:
+            t = int(p.get("target") or 5)
+            new = {"pages": t if p["metric"] == "pages" else 0, "minutes": t if p["metric"] == "minutes" else 20,
+                   "at_level": True}
+            if p["metric"] == "paragraphs":
+                new["paragraphs"] = t
+            conn.execute("UPDATE activities SET params = ? WHERE id = ?", (json.dumps(new), r["id"]))
+    conn.execute("UPDATE activities SET name = 'Boekenwurm — read 5 pages or 20 minutes' "
+                 "WHERE name = 'Boekenwurm — read 5 pages' AND kind = 'bw_reading'")
+    if conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] and \
+            not conn.execute("SELECT 1 FROM activities WHERE kind = 'bw_diary'").fetchone():
+        conn.execute(
+            "INSERT INTO activities (name, category, kind, params, est_min, weight, in_pool, description, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            ("Boekenwurm — diary entry", "writing", "bw_diary", "{}", 15, 0.8, 1,
+             "Write a diary entry in Boekenwurm (fine on your phone). Only the fact that you wrote is shared, "
+             "never the text.", time.time()))
+    for r in conn.execute("SELECT id, params FROM activities WHERE name = 'Dagboek — diary entry' AND kind = 'note'"):
+        p = json.loads(r["params"])
+        if p.get("prompt") == "Schrijf over je dag (minimaal 60 woorden)." and "prompt_set" not in p:
+            p.pop("prompt")
+            p["prompt_set"] = "diary"
+            conn.execute("UPDATE activities SET params = ? WHERE id = ?", (json.dumps(p), r["id"]))
 
 
 def _mark_install_day(conn):

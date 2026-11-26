@@ -1,5 +1,14 @@
-"""Boekenwurm (Supabase) — sign in once, then read today's reading sessions
-and flashcard reviews with your own account. Row-level security means this
+"""Boekenwurm: pair once, then ask for a daily summary of numbers.
+
+Pairing (Boekenwurm 2026-11 and later, docs/CONNECTED_APPS.md in that repo):
+Boekenwurm → Account → Settings → Connected apps → "Pair Poortwachter" shows a
+code; Poortwachter finds the database in <Boekenwurm address>/connect.json and
+trades the code once for its own token. The token opens only the summary
+(pages, active reading minutes, cards reviewed, diary written, also counted
+only at or above the reader's level) and Poortwachter's calendar feed.
+
+The older way, signing in with the email code, still works as a fallback
+(below): it reads your own reading sessions and flashcards directly. Row-level security means this
 can only ever see your own rows, and Poortwachter only reads.
 
 Sign-in uses the same email Boekenwurm sends: type its 6-digit code into
@@ -11,6 +20,7 @@ code works without that.
 
 import base64
 import datetime as dt
+import socket
 import hashlib
 import json
 import math
@@ -23,6 +33,7 @@ import urllib.request
 from . import config, db, roster
 
 CALLBACK = f"http://{config.HOST}:{config.PORT}/bw/callback"
+DEFAULT_SITE = "https://boekenwurm.pages.dev"
 
 
 class BWError(Exception):
@@ -135,12 +146,119 @@ def sign_out():
 
 def status():
     s = db.get_setting("bw_session") or {}
+    pair = db.get_setting("bw_pairing") or {}
     return {
         "configured": bool(db.get_setting("bw_url") and db.get_setting("bw_key")),
+        "paired": bool(pair.get("token")),
+        "paired_name": pair.get("name", ""),
+        "paired_at": pair.get("at"),
+        "site": db.get_setting("bw_site") or DEFAULT_SITE,
         "signed_in": bool(s.get("refresh_token")),
         "email": s.get("user_email") or db.get_setting("bw_email") or "",
         "callback": CALLBACK,
+        "connected": bool(pair.get("token") or s.get("refresh_token")),
     }
+
+
+# ---------------------------------------------------------------- pairing (preferred)
+
+
+def _get_json(url, timeout=15):
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        raise BWError(f"{url} answered {e.code}.") from None
+    except urllib.error.URLError as e:
+        raise BWError(f"Couldn't reach {url}: {e.reason}") from None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise BWError("That Boekenwurm doesn't support pairing yet (no connect.json). "
+                      "It needs the Connected apps update.") from None
+
+
+def discover(site=None):
+    """Where this Boekenwurm's database is: <site>/connect.json."""
+    site = (site or db.get_setting("bw_site") or DEFAULT_SITE).strip().rstrip("/")
+    if not site.startswith("https://") and not site.startswith("http://127.0.0.1"):
+        raise BWError("The Boekenwurm address should start with https://")
+    info = _get_json(f"{site}/connect.json")
+    if not isinstance(info, dict) or info.get("api") != 1 or not info.get("supabase_url") or not info.get("publishable_key"):
+        raise BWError("That Boekenwurm's connect.json isn't one Poortwachter understands.")
+    return site, info["supabase_url"].rstrip("/"), info["publishable_key"]
+
+
+def pair(code, site=None, name=None):
+    code = (code or "").strip()
+    if len(code.replace("-", "").replace(" ", "")) < 8:
+        raise BWError("Type the 8-character code Boekenwurm shows (like K7QM-3XPA).")
+    site, url, key = discover(site)
+    name = name or f"Poortwachter on {socket.gethostname()}"[:80]
+    try:
+        r = _request("POST", f"{url}/rest/v1/rpc/claim_pairing_code", key, {"p_code": code, "p_name": name})
+    except BWError as e:
+        if "isn't valid" in str(e) or "expired" in str(e):
+            raise BWError("That code didn't work: it may be mistyped, used already or older than 10 minutes. "
+                          "Make a new one in Boekenwurm.") from None
+        if "claim_pairing_code" in str(e) or "404" in str(e):
+            raise BWError("That Boekenwurm's database isn't ready for pairing yet (it needs migration 0013).") from None
+        raise
+    if not isinstance(r, dict) or not r.get("token"):
+        raise BWError("Boekenwurm didn't return a connection. Try a new code.")
+    db.set_setting("bw_site", site)
+    db.set_setting("bw_url", url)
+    db.set_setting("bw_key", key)
+    db.set_setting("bw_pairing", {"token": r["token"], "id": r.get("connection_id"), "name": name, "at": time.time()})
+    db.set_setting("bw_calendar", {})
+    db.log("boekenwurm", f"paired as {name}")
+    return status()
+
+
+def unpair():
+    db.set_setting("bw_pairing", {})
+    db.set_setting("bw_calendar", {})
+    db.log("boekenwurm", "unpaired")
+    return status()
+
+
+def _pair_token():
+    return (db.get_setting("bw_pairing") or {}).get("token")
+
+
+def call_rpc(fn, body):
+    url, key = _conf()
+    return _request("POST", f"{url}/rest/v1/rpc/{fn}", key, body)
+
+
+_cache = {}
+
+
+def summary(day):
+    """The connection_summary for a study day (02:00 → 02:00), cached for a minute."""
+    token = _pair_token()
+    if not token:
+        raise BWError("Pair Poortwachter with Boekenwurm in Settings first.")
+    hit = _cache.get(day)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    start = roster.day_start(day)
+    end = start + dt.timedelta(days=1)
+    try:
+        r = call_rpc("connection_summary", {
+            "p_token": token,
+            "p_from": start.astimezone(dt.timezone.utc).isoformat(),
+            "p_to": end.astimezone(dt.timezone.utc).isoformat(),
+            "p_day": day,
+        })
+    except BWError as e:
+        if "no longer connected" in str(e):
+            unpair()
+            raise BWError("Boekenwurm says Poortwachter was disconnected. Pair it again in Settings.") from None
+        raise
+    _cache[day] = (time.time(), r)
+    return r
 
 
 def _token():
@@ -207,23 +325,67 @@ def cards_today(day):
     return len(rows)
 
 
+def _reading_targets(params):
+    """Older activities said {metric, target}; now {pages, minutes, at_level}."""
+    if "metric" in params and "pages" not in params and "minutes" not in params:
+        m, t = params.get("metric"), int(params.get("target") or 1)
+        return {"pages": t if m == "pages" else 0, "minutes": t if m == "minutes" else 0,
+                "paragraphs": t if m == "paragraphs" else 0, "at_level": False}
+    return {"pages": int(params.get("pages") or 0), "minutes": int(params.get("minutes") or 0),
+            "paragraphs": int(params.get("paragraphs") or 0), "at_level": params.get("at_level", True) is not False}
+
+
 def check_reading(params, day):
+    t = _reading_targets(params)
+    if _pair_token():
+        try:
+            s = summary(day)
+        except BWError as e:
+            return {"ok": False, "message": str(e)}
+        sfx = "_at_level" if t["at_level"] else ""
+        pages = int(s.get("pages" + sfx) or 0)
+        minutes = float(s.get("active_minutes" + sfx) or 0)
+        paras = int(s.get("paragraphs" + sfx) or 0)
+        ok = ((t["pages"] and pages >= t["pages"]) or (t["minutes"] and minutes >= t["minutes"])
+              or (t["paragraphs"] and paras >= t["paragraphs"]))
+        parts = []
+        if t["pages"]:
+            parts.append(f"{pages}/{t['pages']} pages")
+        if t["minutes"]:
+            parts.append(f"{minutes:g}/{t['minutes']} active min")
+        if t["paragraphs"]:
+            parts.append(f"{paras}/{t['paragraphs']} paragraphs")
+        msg = " or ".join(parts) + (" at or above your level" if t["at_level"] else "") + " today"
+        if t["at_level"] and int(s.get("pages") or 0) > pages:
+            msg += f" ({int(s.get('pages') or 0) - pages} more pages below your level don't count)"
+        return {"ok": bool(ok), "value": pages, "target": t["pages"], "message": msg, "summary": s}
+    # Fallback: the older email sign-in (no active time or levels).
     try:
         stats = reading_today(day)
     except BWError as e:
         return {"ok": False, "message": str(e)}
-    metric = params.get("metric", "pages")
-    target = int(params.get("target", 1))
-    value = stats.get(metric, 0)
-    return {"ok": value >= target, "value": value, "target": target,
-            "message": f"{value} / {target} {metric} today · {stats['sessions']} session(s), "
-                       f"{stats['paragraphs']} paragraphs"}
+    ok = ((t["pages"] and stats["pages"] >= t["pages"]) or (t["minutes"] and stats["minutes"] >= t["minutes"])
+          or (t["paragraphs"] and stats["paragraphs"] >= t["paragraphs"]))
+    return {"ok": bool(ok), "value": stats["pages"], "target": t["pages"],
+            "message": f"{stats['pages']} pages, {stats['minutes']} min, {stats['paragraphs']} paragraphs today "
+                       "(pair with Boekenwurm for active time and levels)"}
 
 
 def check_cards(params, day):
+    target = int(params.get("cards", 1))
     try:
-        n = cards_today(day)
+        n = int(summary(day).get("cards_reviewed") or 0) if _pair_token() else cards_today(day)
     except BWError as e:
         return {"ok": False, "message": str(e)}
-    target = int(params.get("cards", 1))
     return {"ok": n >= target, "value": n, "target": target, "message": f"{n} / {target} cards reviewed today"}
+
+
+def check_diary(params, day):
+    if not _pair_token():
+        return {"ok": False, "message": "Pair Poortwachter with Boekenwurm in Settings to count its diary."}
+    try:
+        done = bool(summary(day).get("diary_done"))
+    except BWError as e:
+        return {"ok": False, "message": str(e)}
+    return {"ok": done, "message": "Diary written in Boekenwurm today" if done else
+            "No Boekenwurm diary entry today yet. Write one there, or use Poortwachter's own diary task."}

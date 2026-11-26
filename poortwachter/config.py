@@ -41,6 +41,7 @@ KINDS = {
     "anki": "Anki reviews (checked in your Anki collection)",
     "bw_reading": "Boekenwurm reading (checked in your account)",
     "bw_cards": "Boekenwurm flashcards (checked in your account)",
+    "bw_diary": "Boekenwurm diary entry (checked in your account; never the text)",
     "timer": "Timer (runs only while the app is open)",
     "note": "Write in Dutch (word minimum, Dutch-language check)",
     "recording": "Voice recording (minimum length)",

@@ -2,6 +2,17 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [3.0.0] - 2026-11-26
+
+- **Pair with Boekenwurm**: a code from Boekenwurm → Account → Settings → Connected apps. Poortwachter then gets Boekenwurm's daily numbers (never text): pages, active reading minutes, cards reviewed, diary written, and which reading was at or above your level. Needs Boekenwurm with the Connected apps update (migration 0013).
+- Boekenwurm reading counts **pages OR active minutes**, whichever comes first, and by default only reading at or above your level. Older activities are converted (their page target, or 20 minutes).
+- New task: **Boekenwurm diary entry** (write on your phone; only the fact that you wrote is shared).
+- **Diary in Poortwachter** with Boekenwurm's 20 prompts (and an English line), and **grammar hints from LanguageTool** on every writing task (Settings → Writing).
+- **Anki: several decks** per activity, ticked from your deck list.
+- **Calendars**: events from your calendar's private iCal address become sessions by keyword (italki, taalgroep…), following moves and cancellations; your plan is published through Boekenwurm at a secret address Google Calendar can subscribe to (and locally at /calendar.ics).
+- **Its own window**: Poortwachter opens as an app (GTK/WebKit) with a menu and dock icon; outside links open in your browser.
+- Textbook pages are shown as images, with page buttons and zoom, so the study view works everywhere.
+
 ## [2.1.0] - 2026-11-25
 
 - Boekenwurm sign-in with the 6-digit code from the sign-in email, so no Supabase redirect-URL setup is needed. (The link still works if the redirect URL is added.)

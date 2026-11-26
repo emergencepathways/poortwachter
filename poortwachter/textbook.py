@@ -61,6 +61,8 @@ def delete_book(book_id):
     b = book(book_id)
     if not b:
         return
+    for f in (config.STATE_DIR / "cache").glob(f"tb{book_id}-p*.png"):
+        f.unlink(missing_ok=True)
     try:
         os.remove(b["file"])
     except OSError:
@@ -70,6 +72,27 @@ def delete_book(book_id):
     conn.execute("DELETE FROM textbooks WHERE id = ?", (book_id,))
     if db.get_setting("active_textbook") == book_id:
         db.set_setting("active_textbook", None)
+
+
+def render_page(book_id, pdf_page, dpi=110):
+    """One PDF page as a PNG (cached), so the study view works in any browser or app window, PDF viewer or not."""
+    b = book(book_id)
+    if not b:
+        raise TextbookError("No such textbook.")
+    pdf_page = int(pdf_page)
+    if pdf_page < 1 or (b["pages"] and pdf_page > b["pages"]):
+        raise TextbookError("That page isn't in the PDF.")
+    cache = config.STATE_DIR / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    out = cache / f"tb{book_id}-p{pdf_page}-{dpi}.png"
+    if not out.exists():
+        stem = str(out)[:-4]
+        try:
+            subprocess.run(["pdftoppm", "-f", str(pdf_page), "-l", str(pdf_page), "-r", str(dpi), "-png",
+                            "-singlefile", b["file"], stem], check=True, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise TextbookError(f"Couldn't draw that page (is poppler-utils installed?): {e}") from None
+    return out
 
 
 def set_offset(book_id, offset):

@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 
-from . import config, db, dutch, roster, textbook, verify_anki, verify_boekenwurm
+from . import config, db, diary, dutch, roster, textbook, verify_anki, verify_boekenwurm
 
 
 class ActionError(Exception):
@@ -39,11 +39,14 @@ def check(task_id):
         res = verify_boekenwurm.check_reading(p, t["day"])
     elif t["kind"] == "bw_cards":
         res = verify_boekenwurm.check_cards(p, t["day"])
+    elif t["kind"] == "bw_diary":
+        res = verify_boekenwurm.check_diary(p, t["day"])
     else:
         raise ActionError("This task isn't checked automatically.")
     prog = t["progress"]
     prog.update({"last_check": time.time(), "message": res.get("message"), "value": res.get("value"),
                  "target": res.get("target")})
+    res.pop("summary", None)
     roster.save_progress(task_id, prog)
     if res.get("ok"):
         roster.complete(task_id, {"checked": res.get("message")})
@@ -56,7 +59,7 @@ def auto_check_all():
     day = roster.today()
     roster.ensure_roster(day)
     for t in roster.tasks_for(day):
-        if t["status"] == "done" or t["kind"] not in ("anki", "bw_reading", "bw_cards"):
+        if t["status"] == "done" or t["kind"] not in ("anki", "bw_reading", "bw_cards", "bw_diary"):
             continue
         if t["mystery"] and not t["revealed"]:
             continue
@@ -115,7 +118,10 @@ def submit_note(task_id, text):
     ok, msg = dutch.check(text, int(t["params"].get("min_words", 30)))
     if not ok:
         raise ActionError(msg)
-    return roster.complete(task_id, {"note": text})
+    ev = {"note": text}
+    if t["progress"].get("prompt"):
+        ev["prompt"] = t["progress"]["prompt"]
+    return roster.complete(task_id, ev)
 
 
 def submit_honor(task_id, note, link=""):
@@ -132,16 +138,26 @@ def submit_honor(task_id, note, link=""):
 
 
 def speaking_prompt(task_id):
+    return task_prompt(task_id)["prompt"]
+
+
+def task_prompt(task_id):
+    """The prompt for a speaking or writing task: a fixed one from the activity, or one drawn at random (speaking
+    prompts from Settings; the diary's 20 prompts, with an English line), kept for the day once drawn."""
     t = _today_task(task_id)
     prog = t["progress"]
     if t["params"].get("prompt"):
-        return t["params"]["prompt"]
+        return {"prompt": t["params"]["prompt"], "translation": "", "fixed": True}
     if not prog.get("prompt") or prog.get("reroll"):
-        prompts = db.get_setting("speaking_prompts") or db.SPEAKING_PROMPTS
-        prog["prompt"] = random.choice(prompts)
+        if t["params"].get("prompt_set") == "diary":
+            nl, en = random.choice([p for p in diary.PROMPTS if p[0] != prog.get("prompt")] or diary.PROMPTS)
+            prog["prompt"], prog["translation"] = nl, en
+        else:
+            prompts = db.get_setting("speaking_prompts") or db.SPEAKING_PROMPTS
+            prog["prompt"], prog["translation"] = random.choice(prompts), ""
         prog["reroll"] = False
         roster.save_progress(task_id, prog)
-    return prog["prompt"]
+    return {"prompt": prog["prompt"], "translation": prog.get("translation", ""), "fixed": False}
 
 
 def new_prompt(task_id):
@@ -149,7 +165,7 @@ def new_prompt(task_id):
     prog = t["progress"]
     prog["reroll"] = True
     roster.save_progress(task_id, prog)
-    return speaking_prompt(task_id)
+    return task_prompt(task_id)
 
 
 def _duration(path):

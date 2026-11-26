@@ -301,7 +301,7 @@ class CheckTests(Base):
         self.assertEqual(r["due_left"], 1)
         self.assertIn("Nederlands::Werkwoorden", self.anki.list_decks())
         r = self.anki.check({"deck": "Frans", "reviews": 1}, self.roster.today())
-        self.assertIn("not found", r["message"])
+        self.assertIn("Not found", r["message"])
 
 
 # ---------------------------------------------------------------- textbook

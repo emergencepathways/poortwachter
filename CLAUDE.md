@@ -8,16 +8,23 @@ A personal Linux Mint app that keeps Steam closed until the owner's daily Dutch 
 - `poortwachter/`: Python 3, standard library only. `roster.py` (day rules, generation, carryover, lock),
   `events.py` (sessions), `pto.py` (earned free days, ledger in whole hours), `textbook.py` (sets, grading
   via the Claude API), `actions.py` (how each task kind is completed), `verify_*.py` (Anki, Boekenwurm),
-  `watchdog.py` (closes Steam), `server.py` (local web app + JSON API on 127.0.0.1:7623), `__main__.py` (CLI).
+  `watchdog.py` (closes Steam; `Jobs` runs calendar import and publishing), `server.py` (local web app + JSON API
+  on 127.0.0.1:7623), `__main__.py` (CLI), `ical.py` (calendar import → sessions, the plan as a feed),
+  `grammar.py` (LanguageTool hints), `diary.py` (Boekenwurm's 20 diary prompts).
+- Boekenwurm: paired through Boekenwurm's Connected apps (its `docs/CONNECTED_APPS.md`, migration 0013): Poortwachter
+  reads `connect.json`, trades a pairing code for a token, then calls `connection_summary()` and `put_app_calendar()`.
+  The older email-code sign-in is a fallback only.
 - `web/`: plain HTML/CSS/JS, no build step, works offline.
-- `bin/`, `systemd/`, `desktop/`, `install.sh`, `uninstall.sh`: install and update.
+- `bin/`, `systemd/`, `desktop/`, `install.sh`, `uninstall.sh`: install and update. `bin/poortwachter-window` is the
+  app window (GTK + WebKit2, system python3).
 - `tests/`: `python3 -m unittest discover -s tests` (needs poppler-utils, qpdf, ffmpeg). CI runs them on every push.
 
 ## Rules
 
 - The owner's choices are the spec: 02:00 reset, today fixed / plan 7 days ahead, carryover cap 2,
   textbook & reading caps 45 min, session days = sessions + one minimum task, PTO (+1 h per completed day,
-  24 h per free day, missed day wipes partial hours, cap 15 → +1/yr → 20, emergency key spends a banked day).
+  24 h per free day, missed day wipes partial hours, cap 15 → +1/yr → 20, emergency key spends a banked day),
+  Boekenwurm reading = pages OR active minutes, at or above her level (any set level counts).
   Change them only when she asks, and update tests + CHANGELOG together.
 - The repo is public: never commit the textbook, sets files built from it, recordings, databases or keys (see .gitignore).
 - The lock must stay hard to bypass from the browser: no UI or API path that weakens today.

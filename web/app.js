@@ -60,11 +60,19 @@ const catVar = (c) => `--cat: var(--c-${CAT_LABEL[c] ? c : 'other'})`;
 function kindSummary(t) {
   const p = t.params || {};
   switch (t.kind) {
-    case 'anki': return `${p.reviews} reviews${p.deck ? ' in ' + p.deck : ''}${p.clear_due ? ' + clear due' : ''}`;
-    case 'bw_reading': return `${p.target} ${p.metric} in Boekenwurm`;
+    case 'anki': {
+      const decks = (p.decks && p.decks.length) ? p.decks : (p.deck ? [p.deck] : []);
+      return `${p.reviews} reviews${decks.length ? ' in ' + (decks.length > 2 ? `${decks.length} decks` : decks.join(' + ')) : ''}${p.clear_due ? ' + clear due' : ''}`;
+    }
+    case 'bw_reading': {
+      if (p.metric) return `${p.target} ${p.metric} in Boekenwurm`;
+      const parts = [p.pages ? `${p.pages} pages` : '', p.minutes ? `${p.minutes} active min` : ''].filter(Boolean);
+      return `${parts.join(' or ')} in Boekenwurm${p.at_level !== false ? ' at your level' : ''}`;
+    }
     case 'bw_cards': return `${p.cards} Boekenwurm cards`;
+    case 'bw_diary': return 'Diary entry in Boekenwurm';
     case 'timer': return `${p.minutes} min timer${p.note_words ? ` + ${p.note_words}-word note` : ''}`;
-    case 'note': return `${p.min_words}+ words in Dutch`;
+    case 'note': return `${p.min_words}+ words in Dutch${p.prompt_set === 'diary' ? ' · diary prompt' : ''}`;
     case 'recording': { const s = p.min_seconds || 60; return `Record ${s < 60 ? s + ' s' : Math.round(s / 60 * 10) / 10 + ' min'}`; }
     case 'textbook': return 'Graded by Claude';
     case 'honor': return t.source === 'event' ? `Session${p.place ? ' · ' + p.place : ''}. Tick it off afterwards` : 'Honour check-off';
@@ -243,7 +251,7 @@ async function openTask(id) {
     return;
   }
   if (t.status === 'done') return openDone(t);
-  const fn = { anki: panelCheck, bw_reading: panelCheck, bw_cards: panelCheck, timer: panelTimer, note: panelNote, recording: panelRecording, textbook: panelTextbook, honor: panelHonor }[t.kind];
+  const fn = { anki: panelCheck, bw_reading: panelCheck, bw_cards: panelCheck, bw_diary: panelCheck, timer: panelTimer, note: panelNote, recording: panelRecording, textbook: panelTextbook, honor: panelHonor }[t.kind];
   if (fn) fn(t);
 }
 
@@ -263,8 +271,11 @@ function panelCheck(t) {
   const p = t.params;
   const how = {
     anki: `Open Anki and do your reviews${p.deck ? ` in <b>${esc(p.deck)}</b>` : ''}. Target: <b>${p.reviews}</b> reviews since 02:00${p.clear_due ? ', and no due cards left' : ''}. You don't need to close Anki first.`,
-    bw_reading: `Read in Boekenwurm. Target: <b>${p.target} ${esc(p.metric)}</b> today. Finish or leave the reading session so it syncs, then press Check.`,
+    bw_reading: p.metric
+      ? `Read in Boekenwurm. Target: <b>${p.target} ${esc(p.metric)}</b> today. Finish or leave the reading session so it syncs, then press Check.`
+      : `Read in Boekenwurm${p.at_level !== false ? ' <b>at or above your level</b>' : ''}: <b>${[p.pages ? p.pages + ' pages' : '', p.minutes ? p.minutes + ' minutes of active reading' : ''].filter(Boolean).join('</b> or <b>')}</b>, whichever comes first. Stuck on a hard page? The minutes still count. Finish or leave the session so it syncs.`,
     bw_cards: `Review your Boekenwurm flashcards. Target: <b>${p.cards}</b> cards today.`,
+    bw_diary: 'Write a diary entry in Boekenwurm (your phone is fine). Poortwachter only learns that you wrote, never what. Or do a Poortwachter diary task instead if you want grammar hints here.',
   }[t.kind];
   openPanel(`${panelHead(t)}
     <div class="card"><p>${how}</p>
@@ -300,7 +311,7 @@ function panelTimer(t) {
     <div class="card" id="notebox" ${secs >= need ? '' : 'hidden'}>
       ${p.note_words ? `<label for="note">${esc(p.note_prompt || `Write ${p.note_words} words in Dutch`)}</label>
         <textarea id="note" lang="nl" spellcheck="true" placeholder="Schrijf in het Nederlands…"></textarea>
-        <div class="wordcount" id="wc">0 / ${p.note_words} woorden</div>` : '<p>Time\'s up. Nice work!</p>'}
+        <div class="wordcount" id="wc">0 / ${p.note_words} woorden</div>${grammarBox('#note')}` : '<p>Time\'s up. Nice work!</p>'}
       <button class="big warm" id="finish" style="margin-top:10px">Finish task</button>
     </div>`);
   const draw = () => {
@@ -325,6 +336,7 @@ function panelTimer(t) {
   };
   $('#go').onclick = () => (running ? stop() : start());
   if ($('#note')) $('#note').oninput = (e) => { $('#wc').textContent = `${wordCount(e.target.value)} / ${p.note_words} woorden`; };
+  wireGrammar();
   $('#finish').onclick = (e) => guard(async () => {
     if (running) await stop();
     await post(`/api/tasks/${t.id}/finish_timer`, { note: $('#note') ? $('#note').value : '' });
@@ -334,16 +346,49 @@ function panelTimer(t) {
   window.onbeforeunload = () => (running ? true : undefined);
 }
 
+// -- grammar hints (LanguageTool), for any writing box
+function grammarBox(textareaSel) {
+  return `<div class="row" style="margin-top:8px"><button type="button" class="small ghost" data-grammar="${textareaSel}">🔍 Check grammar</button>
+    <span class="hint">Free hints from LanguageTool (your text is sent to it to be checked).</span></div><div class="grammar" id="grammar-out"></div>`;
+}
+function wireGrammar() {
+  $$('[data-grammar]').forEach((b) => (b.onclick = () => guard(async () => {
+    const ta = $(b.dataset.grammar);
+    const out = $('#grammar-out');
+    out.innerHTML = '<p class="muted">Checking…</p>';
+    let r;
+    try { r = await post('/api/grammar', { text: ta.value }); } catch (e) { out.innerHTML = ''; throw e; }
+    if (!r.count) { out.innerHTML = '<p class="ok">✓ LanguageTool found nothing to fix. Goed zo!</p>'; return; }
+    out.innerHTML = `<p><b>${r.count} hint${r.count === 1 ? '' : 's'}</b> (click a suggestion to use it)</p>` + r.matches.map((m, i) => `
+      <div class="ghint"><div><span class="gbad" lang="nl">${esc(m.text)}</span> <small class="muted">${esc(m.category)}</small></div>
+      <div>${esc(m.message)}</div>
+      ${m.replacements.length ? `<div class="row">${m.replacements.map((x) => `<button type="button" class="small" data-fix="${i}" data-val="${esc(x)}" lang="nl">${esc(x)}</button>`).join('')}</div>` : ''}</div>`).join('');
+    $$('[data-fix]', out).forEach((fb) => (fb.onclick = () => {
+      const m = r.matches[+fb.dataset.fix];
+      if (ta.value.substr(m.offset, m.length) !== m.text) { toast('The text changed since the check: check again.', true); return; }
+      ta.value = ta.value.slice(0, m.offset) + fb.dataset.val + ta.value.slice(m.offset + m.length);
+      ta.dispatchEvent(new Event('input'));
+      out.innerHTML = '<p class="muted">Fixed. Check again for more.</p>';
+    }));
+  }, b)));
+}
+
 // -- writing
-function panelNote(t) {
+async function panelNote(t) {
   const p = t.params;
   const key = `pw-draft-${t.id}`;
+  const pr = p.prompt ? { prompt: p.prompt, translation: '', fixed: true } : await api(`/api/tasks/${t.id}/prompt`);
   openPanel(`${panelHead(t)}
-    <div class="prompt" lang="nl">${esc(p.prompt || 'Schrijf in het Nederlands.')}</div>
-    <textarea id="note" lang="nl" spellcheck="true" style="min-height:260px" placeholder="Schrijf hier…"></textarea>
+    <div class="prompt" lang="nl" id="prompt">${esc(pr.prompt || 'Schrijf in het Nederlands.')}</div>
+    <p class="muted" id="prompt-en" style="margin-top:-8px">${esc(pr.translation || '')}</p>
+    ${pr.fixed ? '' : '<button class="small ghost" id="newprompt">↻ Different prompt</button>'}
+    <textarea id="note" lang="nl" spellcheck="true" style="min-height:260px;margin-top:10px" placeholder="Schrijf hier…"></textarea>
     <div class="wordcount" id="wc">0 / ${p.min_words} woorden</div>
-    <p class="hint">Your draft is saved in this browser as you type. Poortwachter checks the word count and that it's written in Dutch, not the grammar.</p>
+    ${grammarBox('#note')}
+    <p class="hint">Your draft is saved in this browser as you type. To tick it off, Poortwachter checks the word count and that it's Dutch; the grammar hints are for you.</p>
     <button class="big warm" id="submit">Submit</button>`);
+  wireGrammar();
+  if ($('#newprompt')) $('#newprompt').onclick = (e) => guard(async () => { const r = await post(`/api/tasks/${t.id}/prompt`); $('#prompt').textContent = r.prompt; $('#prompt-en').textContent = r.translation || ''; }, e.target);
   const ta = $('#note');
   try { ta.value = localStorage.getItem(key) || ''; } catch { /* storage off */ }
   const upd = () => { $('#wc').textContent = `${wordCount(ta.value)} / ${p.min_words} woorden`; try { localStorage.setItem(key, ta.value); } catch { /* */ } };
@@ -380,6 +425,12 @@ async function panelRecording(t) {
   const p = t.params;
   const need = p.min_seconds || 60;
   const { prompt } = await api(`/api/tasks/${t.id}/prompt`);
+  if (!window.MediaRecorder || !navigator.mediaDevices) {
+    openPanel(`${panelHead(t)}<div class="prompt" lang="nl">${esc(prompt)}</div>
+      <div class="card"><p>This window can't record audio. Open the task in your browser to record it there.</p>
+      <a class="btn" href="${location.origin}/#today" target="_blank" rel="noopener">Open in browser</a></div>`);
+    return;
+  }
   openPanel(`${panelHead(t)}
     <div class="prompt" lang="nl" id="prompt">${esc(prompt)}</div>
     ${p.prompt ? '' : '<button class="small ghost" id="newprompt">↻ Different prompt</button>'}
@@ -464,10 +515,21 @@ function studyView({ book, task = null, target = {}, practice = false, set = nul
   const off = book.page_offset || 0;
   const startPage = items.length ? items[0].page_from : 1;
   const draftKey = task ? `pw-tb-${task.id}` : `pw-tb-practice-${book.id}-${set ? set.id : 'free'}`;
-  const pdfSrc = (p) => `/files/textbook/${book.id}.pdf#page=${p + off}&zoom=page-width`;
+  let shown = startPage;
+  const pageImg = (p) => `/files/textbook/${book.id}/p/${p + off}.png`;
+  const showPage = (p) => {
+    shown = Math.max(1 - off, p);
+    $('#pdfimg').src = pageImg(shown);
+    $('#pageno').textContent = `p. ${shown}`;
+    $('#pdfpane').scrollTop = 0;
+  };
   openPanel(`
     <div class="study">
-      <iframe id="pdf" title="Textbook" src="${pdfSrc(startPage)}"></iframe>
+      <div class="pdfpane-wrap">
+        <div class="pdfbar row"><button class="small ghost" id="pg-prev" aria-label="Previous page">◀</button><b id="pageno">p. ${startPage}</b><button class="small ghost" id="pg-next" aria-label="Next page">▶</button>
+          <span style="flex:1"></span><button class="small ghost" id="zoom-out" aria-label="Smaller">−</button><button class="small ghost" id="zoom-in" aria-label="Larger">+</button></div>
+        <div class="pdfpane" id="pdfpane"><img id="pdfimg" alt="Textbook page" src="${pageImg(startPage)}"></div>
+      </div>
       <div class="side">
         <p class="muted" style="margin:0">📘 ${esc(book.name)}${practice ? ' · practice (doesn\'t count)' : ''}</p>
         <h1 id="panel-title">${free ? 'Choose an exercise' : esc(title)}</h1>
@@ -502,9 +564,16 @@ function studyView({ book, task = null, target = {}, practice = false, set = nul
   ta.oninput = upd; upd();
   $$('.tb-item').forEach((b) => (b.onclick = () => {
     $$('.tb-item').forEach((x) => x.classList.remove('active')); b.classList.add('active');
-    $('#pdf').src = pdfSrc(+b.dataset.page);
+    showPage(+b.dataset.page);
   }));
-  if ($('#tb-go')) $('#tb-go').onclick = () => { $('#pdf').src = pdfSrc(+$('#tb-from').value || 1); };
+  if ($('#tb-go')) $('#tb-go').onclick = () => showPage(+$('#tb-from').value || 1);
+  let zoom = 100;
+  const setZoom = (z) => { zoom = Math.max(60, Math.min(220, z)); $('#pdfimg').style.width = zoom + '%'; };
+  $('#pg-prev').onclick = () => showPage(shown - 1);
+  $('#pg-next').onclick = () => showPage(shown + 1);
+  $('#zoom-in').onclick = () => setZoom(zoom + 20);
+  $('#zoom-out').onclick = () => setZoom(zoom - 20);
+  $('#pdfimg').onerror = () => { if (shown > startPage) showPage(shown - 1); };
   $('#grade').onclick = (e) => guard(async () => {
     const body = { answers: ta.value };
     if (free) {
@@ -626,9 +695,10 @@ async function viewPlan(selected) {
             <div class="muted" style="font-size:.85rem">${WEEKDAYS[e.weekday]}s${e.time ? ' ' + esc(e.time) : ''} · ${e.minutes} min${e.place ? ' · ' + esc(e.place) : ''}${e.end_date ? ' · until ' + esc(e.end_date) : ''}</div></div>
             <div class="tools"><button class="small ghost" data-editsess="${e.id}">Edit</button><button class="small danger" data-endsess="${e.id}">End</button></div></div>`).join('')}` : ''}
           ${oneoff.length ? `<h3 style="margin-top:14px">Dates</h3>${oneoff.map((e) => `<div class="plan-row" style="--cat: var(--c-${e.category})"><div><div class="name">${esc(e.name)}</div>
-            <div class="muted" style="font-size:.85rem">${esc(shortDay(e.date))}${e.time ? ' ' + esc(e.time) : ''} · ${e.minutes} min${e.place ? ' · ' + esc(e.place) : ''}</div></div>
+            <div class="muted" style="font-size:.85rem">${esc(shortDay(e.date))}${e.time ? ' ' + esc(e.time) : ''} · ${e.minutes} min${e.place ? ' · ' + esc(e.place) : ''}${e.ical_key ? ' · 📆 from your calendar' : ''}</div></div>
             <div class="tools"><button class="small ghost" data-editsess="${e.id}">Edit</button><button class="small danger" data-endsess="${e.id}">✕</button></div></div>`).join('')}` : ''}
           ${!weekly.length && !oneoff.length ? '<p class="muted" style="margin-top:10px">No sessions yet.</p>' : ''}
+          <p class="hint" style="margin-top:10px">Sessions can also come straight from your calendar: <a href="#settings" onclick="setTimeout(() => document.getElementById('calendars')?.scrollIntoView(), 300)">Settings → Calendars</a>.</p>
         </div>
         <div class="card">
           <h2>🏖️ Free days</h2>
@@ -702,18 +772,19 @@ function editSession(e, presets, day, isNew = false) {
 // ------------------------------------------------------------------ LIBRARY (activities + weekly plan)
 
 const KIND_FIELDS = {
-  anki: [['deck', 'text', 'Deck (empty = all decks; subdecks included)'], ['reviews', 'number', 'Reviews needed today'], ['clear_due', 'checkbox', 'Also require no due cards left']],
-  bw_reading: [['metric', 'select:pages,paragraphs,minutes', 'Measure'], ['target', 'number', 'Target']],
+  anki: [['decks', 'decks', 'Decks that count (none ticked = all decks; subdecks included)'], ['reviews', 'number', 'Reviews needed today, across the ticked decks'], ['clear_due', 'checkbox', 'Also require no due cards left in them']],
+  bw_reading: [['pages', 'number', 'Pages (0 = don\'t count pages)'], ['minutes', 'number', 'OR active reading minutes (0 = don\'t count time)'], ['at_level', 'checkbox', 'Only reading at or above my level counts']],
+  bw_diary: [],
   bw_cards: [['cards', 'number', 'Cards reviewed today']],
   timer: [['minutes', 'number', 'Minutes'], ['note_words', 'number', 'Dutch note afterwards: minimum words (0 = none)'], ['note_prompt', 'text', 'Note prompt']],
-  note: [['min_words', 'number', 'Minimum words'], ['prompt', 'text', 'Writing prompt']],
+  note: [['min_words', 'number', 'Minimum words'], ['prompt_set', 'select:,diary', 'Prompts: empty = the fixed prompt below; diary = one of the 20 diary prompts'], ['prompt', 'text', 'Fixed writing prompt']],
   recording: [['min_seconds', 'number', 'Minimum seconds'], ['prompt', 'text', 'Fixed prompt (empty = random from your prompt list)']],
   textbook: [['textbook_id', 'book', 'Textbook (empty = the active one)']],
   honor: [['note_words', 'number', 'Note: minimum words'], ['label', 'text', 'Question to answer'], ['link', 'checkbox', 'Ask for a link (e.g. italki lesson)']],
 };
 const KIND_DEFAULTS = {
-  anki: { deck: '', reviews: 50, clear_due: false }, bw_reading: { metric: 'pages', target: 5 }, bw_cards: { cards: 20 },
-  timer: { minutes: 15, note_words: 20, note_prompt: '' }, note: { min_words: 50, prompt: '' }, recording: { min_seconds: 120, prompt: '' },
+  anki: { decks: [], reviews: 50, clear_due: false }, bw_reading: { pages: 5, minutes: 20, at_level: true }, bw_cards: { cards: 20 }, bw_diary: {},
+  timer: { minutes: 15, note_words: 20, note_prompt: '' }, note: { min_words: 50, prompt_set: '', prompt: '' }, recording: { min_seconds: 120, prompt: '' },
   textbook: { mode: 'queue' }, honor: { note_words: 10, label: '', link: false },
 };
 
@@ -799,18 +870,31 @@ async function editActivity(a) {
     $('#f-params').innerHTML = KIND_FIELDS[kind].map(([key, type, label]) => {
       const v = params[key];
       if (type === 'checkbox') return `<label class="inline" style="margin-top:12px"><input type="checkbox" data-p="${key}" ${v ? 'checked' : ''}> ${esc(label)}</label>`;
-      if (type.startsWith('select:')) return `<label>${esc(label)}</label><select data-p="${key}">${type.slice(7).split(',').map((o) => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+      if (type.startsWith('select:')) return `<label>${esc(label)}</label><select data-p="${key}">${type.slice(7).split(',').map((o) => `<option value="${o}" ${o === (v ?? '') ? 'selected' : ''}>${o || '(none)'}</option>`).join('')}</select>`;
+      if (type === 'decks') {
+        const have = (Array.isArray(v) ? v : []).concat(params.deck ? [params.deck] : []);
+        return `<label>${esc(label)}</label><div class="decklist" data-p="${key}" data-decks="1"><span class="muted">Loading your Anki decks…</span></div>`
+          + `<input type="hidden" id="decks-initial" value="${esc(JSON.stringify(have))}">`;
+      }
       if (type === 'book') return `<label>${esc(label)}</label><select data-p="${key}" data-num="1"><option value="">Active textbook</option>${(S.books?.books || []).map((b) => `<option value="${b.id}" ${b.id === v ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select>`;
       return `<label>${esc(label)}</label><input type="${type}" data-p="${key}" value="${esc(v ?? '')}" ${key === 'deck' ? 'list="decklist"' : ''}>`;
     }).join('') + (kind === 'anki' ? '<datalist id="decklist"></datalist>' : '');
-    if (kind === 'anki') api('/api/anki/decks').then((d) => { $('#decklist').innerHTML = d.map((n) => `<option value="${esc(n)}">`).join(''); }).catch(() => {});
+    if (kind === 'anki') {
+      const have = JSON.parse($('#decks-initial').value || '[]');
+      api('/api/anki/decks').then((d) => {
+        const all = [...new Set([...d, ...have])];
+        $('.decklist').innerHTML = all.length ? all.map((n) => `<label class="inline"><input type="checkbox" value="${esc(n)}" ${have.includes(n) ? 'checked' : ''}> ${esc(n)}${d.includes(n) ? '' : ' <small class="err">(not in Anki)</small>'}</label>`).join('') : '<span class="muted">No decks found. Set up Anki in Settings first.</span>';
+      }).catch((e) => { $('.decklist').innerHTML = `<span class="err">${esc(e.message)}</span>`; });
+    }
   };
   $('#f-kind').onchange = () => { drawParams.touched = false; a.kind = null; drawParams(); };
   drawParams();
   const collect = () => {
     const p = { ...(KIND_DEFAULTS[$('#f-kind').value] || {}) };
+    delete p.deck;
     $$('[data-p]').forEach((el) => {
       const k = el.dataset.p;
+      if (el.dataset.decks) { p[k] = $$('input[type=checkbox]', el).filter((c) => c.checked).map((c) => c.value); return; }
       if (el.type === 'checkbox') p[k] = el.checked;
       else if (el.type === 'number' || el.dataset.num) p[k] = el.value === '' ? null : +el.value;
       else p[k] = el.value;
@@ -984,29 +1068,48 @@ async function viewSettings() {
           <textarea id="sp" lang="nl" style="min-height:220px">${esc(s.speaking_prompts.join('\n'))}</textarea>
           <button id="sp-save" style="margin-top:8px">Save prompts</button>
         </div>
+        <div class="card">
+          <h2>Writing</h2>
+          <label class="inline"><input type="checkbox" id="lt-on" ${s.languagetool ? 'checked' : ''}> Grammar hints from LanguageTool</label>
+          <p class="hint">Adds a "Check grammar" button to writing tasks. Only when you press it, the text you wrote is sent to LanguageTool (LanguageTool GmbH, Germany, EU) to be checked. Free, no account needed. Ticking a task off never depends on it.</p>
+          <button class="ghost small" id="lt-save">Save</button>
+        </div>
       </div>
       <div>
         <div class="card">
           <h2>Boekenwurm</h2>
-          ${s.bw.signed_in ? `<p class="ok">✓ Signed in as ${esc(s.bw.email)}</p>` : '<p class="muted">Not connected.</p>'}
-          <label for="b-url">Supabase project URL</label><input type="url" id="b-url" value="${esc(s.bw_url)}" placeholder="https://xxxx.supabase.co">
-          <label for="b-key">Publishable (anon) key ${s.bw_key_set ? '<span class="chip bonus">saved</span>' : ''}</label>
-          <input type="password" id="b-key" placeholder="${s.bw_key_set ? '•••••••• (leave empty to keep)' : 'sb_publishable_… or eyJ…'}">
-          <p class="hint">The same two values as <code>VITE_SUPABASE_URL</code> / <code>VITE_SUPABASE_PUBLISHABLE_KEY</code> in Boekenwurm (public by design; row-level security protects the data).</p>
-          <button id="b-save" class="ghost">Save connection</button>
-          <hr>
-          <label for="b-email">Your Boekenwurm email</label>
-          <div class="row"><input type="email" id="b-email" style="flex:1" value="${esc(s.bw.email)}"><button id="b-login">${s.bw.signed_in ? 'Sign in again' : 'Send sign-in email'}</button></div>
-          <div id="b-codebox" ${s.bw.signed_in ? 'hidden' : ''}>
-            <label for="b-code">6-digit code from the email</label>
-            <div class="row"><input type="text" id="b-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="123456" style="max-width:160px;letter-spacing:.2em;font-size:1.1rem"><button id="b-verify">Connect</button></div>
-          </div>
-          <p class="hint">Boekenwurm's sign-in email has a link and a 6-digit code. Type the code here: no other setup needed. (The link only works here if <code>${esc(s.bw.callback)}</code> is in Supabase's Redirect URLs; otherwise it just signs you in to Boekenwurm.)</p>
-          <div class="row">${s.bw.signed_in ? '<button class="ghost" id="b-test">Test: today\'s reading</button><button class="danger" id="b-out">Sign out</button>' : ''}</div>
+          ${s.bw.paired ? `<p class="ok">✓ Paired as “${esc(s.bw.paired_name)}”</p>
+            <p class="muted">Poortwachter sees Boekenwurm's daily numbers: pages, active reading minutes, cards, whether you wrote in the diary, and which reading was at or above your level. Never your books or diary text. Disconnect it any time in Boekenwurm (Account → Settings → Connected apps).</p>
+            <div class="row"><button class="ghost" id="b-test">Test: today's numbers</button><button class="danger" id="b-unpair">Unpair</button></div>`
+          : `<ol class="steps">
+              <li>Open Boekenwurm → <b>Account → Settings → Connected apps</b> → <b>Pair Poortwachter</b>.</li>
+              <li>Type the code it shows here (valid 10 minutes):</li>
+            </ol>
+            <div class="row"><input type="text" id="b-pair" placeholder="K7QM-3XPA" maxlength="12" autocomplete="off" spellcheck="false" style="max-width:200px;letter-spacing:.15em;font-size:1.15rem;text-transform:uppercase"><button id="b-pair-go">Pair</button></div>
+            ${s.bw.signed_in ? `<p class="hint">You're also signed in the older way (${esc(s.bw.email)}). That still works, but pairing adds active reading time, levels and the diary.</p>` : ''}`}
           <div id="b-msg" class="hint"></div>
-          <label for="b-ppp">EPUB paragraphs per "page"</label><input type="number" id="b-ppp" min="1" max="20" value="${s.bw_paragraphs_per_page}" style="max-width:120px">
-          <p class="hint">Photographed and PDF books count real printed pages. EPUBs have no page numbers, so this many paragraphs = 1 page.</p>
-          <button class="ghost small" id="b-ppp-save">Save</button>
+          <details style="margin-top:12px"><summary>Advanced</summary>
+            <label for="b-site">Boekenwurm address</label>
+            <div class="row"><input type="url" id="b-site" value="${esc(s.bw.site)}" style="flex:1"><button class="ghost small" id="b-site-save">Save</button></div>
+            <p class="hint">Only change this if you use Boekenwurm at another address.</p>
+            <label for="b-ppp">Older sign-in only: EPUB paragraphs per "page"</label><input type="number" id="b-ppp" min="1" max="20" value="${s.bw_paragraphs_per_page}" style="max-width:120px">
+            <button class="ghost small" id="b-ppp-save">Save</button>
+            ${s.bw.signed_in ? '<div style="margin-top:10px"><button class="danger small" id="b-out">Sign out of the older email sign-in</button></div>' : ''}
+          </details>
+        </div>
+        <div class="card" id="calendars">
+          <h2>Calendars</h2>
+          <h3>Sessions from your calendar</h3>
+          <p class="muted">Paste a calendar's private iCal address (Google Calendar → Settings → your calendar → <i>Secret address in iCal format</i>). Events in the coming week whose title contains a keyword below become sessions, with their real time and length.</p>
+          <div id="feeds">${(s.ical_feeds || []).map((f, i) => `<div class="row feed" style="margin-bottom:6px"><input type="text" class="f-name" value="${esc(f.name || '')}" placeholder="Name" style="max-width:150px"><input type="url" class="f-url" value="${esc(f.url)}" style="flex:1"><button class="small danger" data-delfeed="${i}">✕</button></div>`).join('')}</div>
+          <div class="row"><input type="text" id="f-newname" placeholder="Name (e.g. Google)" style="max-width:150px"><input type="url" id="f-newurl" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" style="flex:1"><button class="small" id="f-add">Add</button></div>
+          <label>Keywords → session type</label>
+          <div id="rules">${(s.ical_rules || []).map((r) => `<div class="row rule" style="margin-bottom:6px"><input type="text" class="r-kw" value="${esc(r.keyword)}" style="flex:1"><select class="r-kind">${['italki', 'library', 'other'].map((k) => `<option value="${k}" ${k === r.kind ? 'selected' : ''}>${k === 'library' ? 'library group' : k === 'other' ? 'other session' : 'italki lesson'}</option>`).join('')}</select><button class="small danger" data-delrule>✕</button></div>`).join('')}</div>
+          <div class="row"><button class="small ghost" id="r-add">+ Keyword</button><button class="small" id="cal-save">Save &amp; sync</button><button class="small ghost" id="cal-test">Show next week's events</button></div>
+          <div id="cal-msg" class="hint"></div>
+          <hr>
+          <h3>Your study plan in Google Calendar</h3>
+          <div id="feed-out" class="muted">Laden…</div>
         </div>
         <div class="card">
           <h2>Daily limits &amp; planning</h2>
@@ -1040,20 +1143,72 @@ async function viewSettings() {
   $('#a-save').onclick = (e) => guard(async () => { await save({ anki_collection: $('#a-path').value.trim() }); viewSettings(); }, e.target);
   $('#a-test').onclick = (e) => guard(async () => { const d = await api('/api/anki/decks'); $('#a-out').innerHTML = d.length ? 'Decks: ' + d.map(esc).join(' · ') : 'No decks found.'; }, e.target);
   $('#sp-save').onclick = (e) => guard(() => save({ speaking_prompts: $('#sp').value.split('\n') }), e.target);
-  $('#b-save').onclick = (e) => guard(async () => { await save({ bw_url: $('#b-url').value.trim(), bw_key: $('#b-key').value.trim() }); viewSettings(); }, e.target);
-  $('#b-login').onclick = (e) => guard(async () => {
-    await post('/api/bw/login', { email: $('#b-email').value.trim() });
-    $('#b-codebox').hidden = false; $('#b-code').focus();
-    $('#b-msg').innerHTML = '<span class="ok">Sent! Check your email and type the 6-digit code above.</span>';
+  if ($('#b-pair-go')) {
+    $('#b-pair-go').onclick = (e) => guard(async () => { await post('/api/bw/pair', { code: $('#b-pair').value }); toast('Paired with Boekenwurm.'); viewSettings(); }, e.target);
+    $('#b-pair').onkeydown = (ev) => { if (ev.key === 'Enter') $('#b-pair-go').click(); };
+  }
+  if ($('#b-unpair')) $('#b-unpair').onclick = (e) => guard(async () => {
+    if (!confirm('Unpair Poortwachter from Boekenwurm? Boekenwurm tasks will stop being checked until you pair again. (To cut it off completely, also Disconnect it in Boekenwurm.)')) return;
+    await post('/api/bw/unpair'); viewSettings();
   }, e.target);
-  $('#b-verify').onclick = (e) => guard(async () => {
-    await post('/api/bw/code', { code: $('#b-code').value });
-    toast('Boekenwurm connected.'); viewSettings();
-  }, e.target);
-  $('#b-code').onkeydown = (ev) => { if (ev.key === 'Enter') $('#b-verify').click(); };
+  $('#b-site-save').onclick = (e) => guard(() => save({ bw_site: $('#b-site').value.trim() }), e.target);
   if ($('#b-out')) $('#b-out').onclick = (e) => guard(async () => { await post('/api/bw/logout'); viewSettings(); }, e.target);
-  if ($('#b-test')) $('#b-test').onclick = (e) => guard(async () => { const r = await api('/api/bw/test'); $('#b-msg').textContent = `Today: ${r.reading.pages} pages · ${r.reading.paragraphs} paragraphs · ${r.reading.minutes} min · ${r.reading.sessions} sessions · ${r.cards} cards reviewed`; }, e.target);
+  if ($('#b-test')) $('#b-test').onclick = (e) => guard(async () => {
+    const r = await api('/api/bw/test');
+    const x = r.summary;
+    $('#b-msg').innerHTML = x
+      ? `Today: <b>${x.pages_at_level}</b> pages and <b>${x.active_minutes_at_level}</b> active min at your level (${x.pages} pages, ${x.active_minutes} min in all) · ${x.cards_reviewed} cards · diary ${x.diary_done ? '✓' : 'not yet'}${x.rank ? ` · rank ${esc(x.rank)}` : ''}`
+      : `Today: ${r.reading.pages} pages · ${r.reading.minutes} min · ${r.cards} cards`;
+  }, e.target);
   $('#b-ppp-save').onclick = (e) => guard(() => save({ bw_paragraphs_per_page: +$('#b-ppp').value }), e.target);
+  $('#lt-save').onclick = (e) => guard(() => save({ languagetool: $('#lt-on').checked }), e.target);
+  const feedsNow = () => $$('#feeds .feed').map((r) => ({ name: $('.f-name', r).value.trim(), url: $('.f-url', r).value.trim() })).filter((f) => f.url);
+  const rulesNow = () => $$('#rules .rule').map((r) => ({ keyword: $('.r-kw', r).value.trim(), kind: $('.r-kind', r).value })).filter((r) => r.keyword);
+  const calSave = async (feeds) => {
+    await post('/api/settings', { ical_feeds: feeds, ical_rules: rulesNow() });
+    const r = await post('/api/calendars/sync');
+    toast(`Calendars synced: ${r.added} new, ${r.updated} changed, ${r.removed} removed sessions.`, (r.errors || []).length > 0);
+    if ((r.errors || []).length) $('#cal-msg').innerHTML = `<span class="err">${r.errors.map(esc).join('<br>')}</span>`;
+  };
+  $('#f-add').onclick = (e) => guard(async () => {
+    const url = $('#f-newurl').value.trim();
+    if (!url) throw new Error('Paste the calendar address first.');
+    await calSave([...feedsNow(), { name: $('#f-newname').value.trim() || 'Calendar', url }]);
+    viewSettings();
+  }, e.target);
+  $$('[data-delfeed]').forEach((b) => (b.onclick = () => guard(async () => { b.closest('.feed').remove(); await calSave(feedsNow()); viewSettings(); }, b)));
+  $$('[data-delrule]').forEach((b) => (b.onclick = () => b.closest('.rule').remove()));
+  $('#r-add').onclick = () => {
+    const d = document.createElement('div'); d.className = 'row rule'; d.style.marginBottom = '6px';
+    d.innerHTML = `<input type="text" class="r-kw" placeholder="keyword in the event title" style="flex:1"><select class="r-kind"><option value="italki">italki lesson</option><option value="library">library group</option><option value="other" selected>other session</option></select><button class="small danger">✕</button>`;
+    $('button', d).onclick = () => d.remove();
+    $('#rules').appendChild(d);
+  };
+  $('#cal-save').onclick = (e) => guard(async () => { await calSave(feedsNow()); }, e.target);
+  $('#cal-test').onclick = (e) => guard(async () => {
+    const feeds = feedsNow();
+    if (!feeds.length) throw new Error('Add a calendar first.');
+    const out = [];
+    for (const f of feeds) {
+      const r = await post('/api/calendars/test', { url: f.url });
+      out.push(`<b>${esc(f.name || 'Calendar')}</b>: ` + (r.events.length ? r.events.map((x) => `${x.match ? '✓' : '·'} ${esc(x.start)} ${esc(x.summary)} (${x.minutes} min)${x.match ? ` → ${esc(x.match)}` : ''}`).join('<br>') : 'no timed events in the coming week'));
+    }
+    $('#cal-msg').innerHTML = out.join('<br><br>') + '<br><small>✓ = matches a keyword and becomes a session.</small>';
+  }, e.target);
+  api('/api/calendars/feed').then((f) => {
+    const st = f.status || {};
+    $('#feed-out').innerHTML = (st.at ? `<p class="hint">Calendars last synced ${new Date(st.at * 1000).toLocaleString()} (${st.sessions ?? 0} sessions found).</p>` : '')
+      + (s.bw.paired
+        ? (f.url
+          ? `<p>Subscribe in Google Calendar: <b>Other calendars → + → From URL</b>, and paste:</p><div class="row"><input type="text" readonly value="${esc(f.url)}" id="feed-url" style="flex:1"><button class="small" id="feed-copy">Copy</button></div>
+             <p class="hint">Google refreshes subscribed calendars a few times a day, so changes show up with a delay. Mystery tasks stay a mystery. <button class="small ghost" id="feed-new">New address</button> stops the old one.</p>`
+          : '<p>Not published yet. <button class="small" id="feed-pub">Publish my plan</button></p>')
+        : '<p>Pair with Boekenwurm (above) to publish your plan at an address Google Calendar can read. Google can\'t reach this computer directly.</p>')
+      + `<p class="hint">For a calendar app on this computer (Thunderbird, GNOME Calendar): <code>${esc(f.local)}</code></p>`;
+    if ($('#feed-copy')) $('#feed-copy').onclick = () => { navigator.clipboard?.writeText($('#feed-url').value).then(() => toast('Copied.'), () => $('#feed-url').select()); };
+    if ($('#feed-pub')) $('#feed-pub').onclick = (e) => guard(async () => { await post('/api/calendars/publish', {}); viewSettings(); }, e.target);
+    if ($('#feed-new')) $('#feed-new').onclick = (e) => guard(async () => { if (!confirm('Make a new address? The old one stops working, so re-subscribe in Google Calendar.')) return; await post('/api/calendars/publish', { new_address: true }); viewSettings(); }, e.target);
+  }).catch(() => {});
   $('#limits-save').onclick = (e) => guard(async () => {
     const category_caps = {};
     $$('[data-cap]').forEach((i) => { if (i.value) category_caps[i.dataset.cap] = +i.value; });

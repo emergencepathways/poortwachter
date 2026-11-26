@@ -1,0 +1,103 @@
+#!/usr/bin/python3
+"""Poortwachter in its own window (GTK + WebKit), with its own menu and dock icon.
+
+The study app is still the local service at http://127.0.0.1:7623; this is
+just a native window around it instead of a browser tab. Opening it twice
+brings the existing window forward. Links that leave Poortwachter (italki,
+Boekenwurm, Google) open in your normal browser. The microphone is allowed
+for Poortwachter itself only, for speaking tasks.
+"""
+import sys
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+for _v in ("4.1", "4.0"):
+    try:
+        gi.require_version("WebKit2", _v)
+        break
+    except ValueError:
+        continue
+from gi.repository import Gio, GLib, Gtk, WebKit2  # noqa: E402
+
+APP_URL = "http://127.0.0.1:7623/"
+ICON = "/opt/poortwachter/web/favicon.svg"
+WAITING = """<!doctype html><meta charset="utf-8"><body style="font:16px system-ui,sans-serif;display:grid;
+place-items:center;height:90vh;color:#1d2433;background:#f6f3ee"><div style="text-align:center">
+<h2>Waiting for Poortwachter…</h2><p>The service isn't answering yet. If this lasts, run
+<code>sudo systemctl start poortwachter</code>.</p><p>Retrying every few seconds.</p></div>"""
+
+
+def _set(settings, name, value):
+    """Set a WebKit setting if this WebKit version has it."""
+    if settings.find_property(name.replace("_", "-")) is not None:
+        settings.set_property(name.replace("_", "-"), value)
+
+
+class Window(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Poortwachter")
+        self.set_default_size(1320, 900)
+        try:
+            self.set_icon_from_file(ICON)
+        except GLib.Error:
+            pass
+        self.view = WebKit2.WebView()
+        s = self.view.get_settings()
+        for name, value in (("enable_media_stream", True), ("enable_mediasource", True),
+                            ("enable_media_capabilities", True), ("enable_developer_extras", False),
+                            ("media_playback_requires_user_gesture", False)):
+            _set(s, name, value)
+        if s.find_property("enable-media-recorder") is not None:
+            s.set_property("enable-media-recorder", True)
+        self.view.connect("permission-request", self.on_permission)
+        self.view.connect("decide-policy", self.on_policy)
+        self.view.connect("load-failed", self.on_failed)
+        self.view.connect("notify::title", lambda v, _p: self.set_title(v.get_title() or "Poortwachter"))
+        self.add(self.view)
+        self.view.load_uri(APP_URL)
+        self.show_all()
+
+    def on_permission(self, _view, request):
+        # Only Poortwachter's own page asks; allow the microphone (speaking tasks), refuse everything else.
+        if isinstance(request, WebKit2.UserMediaPermissionRequest):
+            if self.view.get_uri() and self.view.get_uri().startswith(APP_URL):
+                request.allow()
+                return True
+        request.deny()
+        return True
+
+    def on_policy(self, _view, decision, kind):
+        if kind in (WebKit2.PolicyDecisionType.NAVIGATION_ACTION, WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION):
+            uri = decision.get_navigation_action().get_request().get_uri()
+            internal = uri.startswith(APP_URL) or uri.startswith("about:") or uri.startswith("blob:") \
+                or uri.startswith("data:")
+            if kind == WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION or not internal:
+                Gio.AppInfo.launch_default_for_uri(uri, None)
+                decision.ignore()
+                return True
+        return False
+
+    def on_failed(self, _view, _event, uri, _error):
+        if uri.startswith(APP_URL):
+            self.view.load_alternate_html(WAITING, uri, None)
+            GLib.timeout_add_seconds(4, lambda: (self.view.load_uri(APP_URL), False)[1])
+            return True
+        return False
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="nl.emergencepathways.Poortwachter")
+        self.window = None
+
+    def do_activate(self):
+        if self.window is None:
+            self.window = Window(self)
+        self.window.present()
+
+
+if __name__ == "__main__":
+    GLib.set_prgname("poortwachter")
+    GLib.set_application_name("Poortwachter")
+    sys.exit(App().run(sys.argv))

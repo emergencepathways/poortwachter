@@ -114,7 +114,8 @@ def notify(user, state, open_app=True):
     run_as_user(user, ["notify-send", "-a", "Poortwachter", "-i", "dialog-information",
                        "Steam is locked", body])
     if open_app:
-        run_as_user(user, ["xdg-open", f"http://{config.HOST}:{config.PORT}/"])
+        url = f"http://{config.HOST}:{config.PORT}/"
+        run_as_user(user, ["sh", "-c", f"/usr/local/bin/poortwachter-window || xdg-open {url}"])
 
 
 class Watchdog(threading.Thread):
@@ -159,3 +160,34 @@ class Watchdog(threading.Thread):
             notify(user, state)
         kill(pids)
         db.log("blocked", ", ".join(sorted({n for _, n in pids}))[:200])
+
+
+class Jobs(threading.Thread):
+    """Background chores, whoever is logged in: calendar import (hourly) and publishing the plan through
+    Boekenwurm (every 5 minutes, only when it changed)."""
+    daemon = True
+
+    def __init__(self):
+        super().__init__(name="jobs")
+        self.stop = threading.Event()
+        self.last_sync = 0
+        self.last_publish = 0
+
+    def run(self):
+        self.stop.wait(20)
+        while not self.stop.is_set():
+            from . import ical, verify_boekenwurm
+            now = time.time()
+            try:
+                if now - self.last_sync > 3600 and db.get_setting("ical_feeds"):
+                    self.last_sync = now
+                    ical.sync()
+            except Exception as e:  # noqa: BLE001
+                db.log("calendar-error", repr(e)[:300])
+            try:
+                if now - self.last_publish > 300 and verify_boekenwurm.status()["paired"]:
+                    self.last_publish = now
+                    ical.publish()
+            except Exception as e:  # noqa: BLE001
+                db.log("calendar-error", repr(e)[:300])
+            self.stop.wait(60)

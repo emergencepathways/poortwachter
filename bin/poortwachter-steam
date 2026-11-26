@@ -39,4 +39,4 @@ left = state["total"] - state["done"]
 notify("Steam is locked 🔒",
        f"{left} study task{'s' if left != 1 else ''} to go (~{state['minutes_left']} min). "
        "Eerst Nederlands, dan spelen!")
-subprocess.Popen(["xdg-open", URL + "/"])
+subprocess.Popen(["sh", "-c", f"/usr/local/bin/poortwachter-window || xdg-open {URL}/"])

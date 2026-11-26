@@ -15,7 +15,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, actions, config, db, events, pto, roster, textbook, verify_anki, verify_boekenwurm
+from . import __version__, actions, config, db, events, grammar, ical, pto, roster, textbook, verify_anki, verify_boekenwurm
 from .config import CATEGORIES, KINDS
 
 MAX_JSON = 2 * 1024 * 1024
@@ -24,7 +24,8 @@ MAX_PDF = 600 * 1024 * 1024
 
 SETTABLE = {"schedule", "claude_api_key", "claude_model", "anki_collection", "bw_url", "bw_key",
             "bw_paragraphs_per_page", "speaking_prompts", "min_fill_minutes", "active_textbook",
-            "category_caps", "event_minimum_activity", "plan_days_ahead"}
+            "category_caps", "event_minimum_activity", "plan_days_ahead", "bw_site", "languagetool",
+            "ical_feeds", "ical_rules"}
 PLAN_KEYS = {"schedule", "min_fill_minutes", "category_caps", "event_minimum_activity", "active_textbook"}
 
 
@@ -106,6 +107,9 @@ def settings_view():
         "event_minimum_activity": db.get_setting("event_minimum_activity"),
         "plan_days_ahead": db.get_setting("plan_days_ahead"),
         "installed_day": db.get_setting("installed_day"),
+        "languagetool": db.get_setting("languagetool"),
+        "ical_feeds": db.get_setting("ical_feeds"),
+        "ical_rules": db.get_setting("ical_rules"),
     }
 
 
@@ -248,6 +252,37 @@ def api_session_skip(h, m):
     return day_view(b["day"])
 
 
+@route("POST", r"/api/calendars/sync")
+def api_cal_sync(h, m):
+    return ical.sync()
+
+
+@route("POST", r"/api/calendars/test")
+def api_cal_test(h, m):
+    url = (h.json().get("url") or "").strip()
+    text = ical.fetch(url)
+    first = roster.study_day() + dt.timedelta(days=1)
+    occ = ical.expand(text, first, dt.date.fromisoformat(roster.max_plan_day()))
+    rules = db.get_setting("ical_rules") or []
+    return {"events": [{"summary": o["summary"], "start": o["start"].strftime("%a %d %b %H:%M"),
+                        "minutes": o["minutes"], "match": (ical.match_rule(o["summary"], rules) or {}).get("kind")}
+                       for o in occ[:40]]}
+
+
+@route("GET", r"/api/calendars/feed")
+def api_cal_feed(h, m):
+    cal = db.get_setting("bw_calendar") or {}
+    return {"url": ical.feed_url(), "published_at": cal.get("at"),
+            "local": f"http://{config.HOST}:{config.PORT}/calendar.ics",
+            "status": db.get_setting("ical_status") or {}}
+
+
+@route("POST", r"/api/calendars/publish")
+def api_cal_publish(h, m):
+    url = ical.publish(force_new_secret=bool(h.json().get("new_address")))
+    return {"url": url}
+
+
 @route("GET", r"/api/pto")
 def api_pto(h, m):
     return pto.summary()
@@ -310,12 +345,17 @@ def api_honor(h, m):
 
 @route("GET", r"/api/tasks/(\d+)/prompt")
 def api_prompt(h, m):
-    return {"prompt": actions.speaking_prompt(int(m.group(1)))}
+    return actions.task_prompt(int(m.group(1)))
 
 
 @route("POST", r"/api/tasks/(\d+)/prompt")
 def api_new_prompt(h, m):
-    return {"prompt": actions.new_prompt(int(m.group(1)))}
+    return actions.new_prompt(int(m.group(1)))
+
+
+@route("POST", r"/api/grammar")
+def api_grammar(h, m):
+    return grammar.check(h.json().get("text", ""))
 
 
 @route("POST", r"/api/tasks/(\d+)/recording")
@@ -434,6 +474,11 @@ def api_settings_save(h, m):
         db.set_setting(key, value)
     if PLAN_KEYS & set(b):
         refresh_future()
+    if {"ical_feeds", "ical_rules"} & set(b):
+        try:
+            ical.sync()
+        except ical.ICalError:
+            pass
     db.log("settings", ", ".join(sorted(k for k in b if k in SETTABLE and "key" not in k)))
     return settings_view()
 
@@ -461,6 +506,17 @@ def api_bw_login(h, m):
     return {"sent": True}
 
 
+@route("POST", r"/api/bw/pair")
+def api_bw_pair(h, m):
+    b = h.json()
+    return verify_boekenwurm.pair(b.get("code", ""), b.get("site") or None)
+
+
+@route("POST", r"/api/bw/unpair")
+def api_bw_unpair(h, m):
+    return verify_boekenwurm.unpair()
+
+
 @route("POST", r"/api/bw/code")
 def api_bw_code(h, m):
     verify_boekenwurm.finish_login_otp(h.json().get("code", ""))
@@ -484,6 +540,8 @@ def api_bw_logout(h, m):
 @route("GET", r"/api/bw/test")
 def api_bw_test(h, m):
     day = roster.today()
+    if verify_boekenwurm.status()["paired"]:
+        return {"summary": verify_boekenwurm.summary(day)}
     return {"reading": verify_boekenwurm.reading_today(day), "cards": verify_boekenwurm.cards_today(day)}
 
 
@@ -691,7 +749,8 @@ class Handler(BaseHTTPRequestHandler):
         except HTTPError as e:
             self.send_json({"error": e.message}, e.status)
         except (roster.EditError, actions.ActionError, textbook.TextbookError,
-                verify_boekenwurm.BWError, events.EventError, pto.PTOError, ValueError) as e:
+                verify_boekenwurm.BWError, events.EventError, pto.PTOError, grammar.GrammarError,
+                ical.ICalError, ValueError) as e:
             self.send_json({"error": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
             db.log("error", traceback.format_exc()[-1500:])
@@ -700,6 +759,21 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self, path):
         if path == "/bw/callback":
             self._bw_callback()
+            return
+        mp = re.match(r"^/files/textbook/(\d+)/p/(\d+)\.png$", path)
+        if mp:
+            try:
+                self.send_file(textbook.render_page(int(mp.group(1)), int(mp.group(2))), "image/png")
+            except textbook.TextbookError as e:
+                self.send_json({"error": str(e)}, 404)
+            return
+        if path == "/calendar.ics":
+            data = ical.plan_ics().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/calendar; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         if path.startswith("/files/textbook/"):
             bid = path.rsplit("/", 1)[-1].split(".")[0]

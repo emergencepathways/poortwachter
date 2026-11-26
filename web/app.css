@@ -269,3 +269,18 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
 .setrow ul { margin: 6px 0 8px 18px; padding: 0; font-size: .9rem; }
 .caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0 12px; }
 .caps label { font-size: .85rem; }
+
+/* ---------- v3: page images, grammar hints, steps */
+.pdfpane-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; }
+.pdfbar { padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.pdfpane { flex: 1; overflow: auto; text-align: center; background: #e9e6e0; }
+.pdfpane img { width: 100%; max-width: none; display: block; margin: 0 auto; background: #fff; }
+@media (max-width: 900px) { .pdfpane-wrap { height: 75vh; } }
+.grammar .ghint { border: 1px solid var(--line); border-left: 4px solid var(--oranje); border-radius: 10px; padding: 8px 12px; margin: 6px 0; background: var(--surface); font-size: .92rem; }
+.gbad { text-decoration: underline wavy var(--oranje); font-weight: 650; }
+.steps { padding-left: 20px; margin: 6px 0 10px; }
+.steps li { margin-bottom: 4px; }
+.decklist { display: grid; gap: 4px; max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+#calendars .row { flex-wrap: nowrap; }
+#calendars .row input, #calendars .row select { width: auto; min-width: 0; }
+#calendars .row select { flex: 0 0 auto; }
