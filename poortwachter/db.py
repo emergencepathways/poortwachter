@@ -255,7 +255,6 @@ DEFAULT_SETTINGS = {
     "installed_day": None,           # set on first start: that day is free
     "bw_site": "https://boekenwurm.pages.dev",
     "bw_pairing": {},                # Boekenwurm connection token (never sent to the browser)
-    "bw_calendar": {},               # the published calendar feed's secret
     "languagetool": True,            # grammar hints on writing tasks (the text goes to LanguageTool)
     "ical_feeds": [],                # [{"url", "name"}]: calendars whose matching events become sessions
     "ical_rules": [{"keyword": "italki", "kind": "italki"}, {"keyword": "taalgroep", "kind": "library"},
@@ -330,8 +329,6 @@ def _migrate(conn):
             t = int(p.get("target") or 5)
             new = {"pages": t if p["metric"] == "pages" else 0, "minutes": t if p["metric"] == "minutes" else 20,
                    "at_level": True}
-            if p["metric"] == "paragraphs":
-                new["paragraphs"] = t
             conn.execute("UPDATE activities SET params = ? WHERE id = ?", (json.dumps(new), r["id"]))
     conn.execute("UPDATE activities SET name = 'Boekenwurm — read 5 pages or 20 minutes' "
                  "WHERE name = 'Boekenwurm — read 5 pages' AND kind = 'bw_reading'")

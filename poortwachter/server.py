@@ -271,16 +271,8 @@ def api_cal_test(h, m):
 
 @route("GET", r"/api/calendars/feed")
 def api_cal_feed(h, m):
-    cal = db.get_setting("bw_calendar") or {}
-    return {"url": ical.feed_url(), "published_at": cal.get("at"),
-            "local": f"http://{config.HOST}:{config.PORT}/calendar.ics",
+    return {"local": f"http://{config.HOST}:{config.PORT}/calendar.ics",
             "status": db.get_setting("ical_status") or {}}
-
-
-@route("POST", r"/api/calendars/publish")
-def api_cal_publish(h, m):
-    url = ical.publish(force_new_secret=bool(h.json().get("new_address")))
-    return {"url": url}
 
 
 @route("GET", r"/api/pto")

@@ -163,31 +163,23 @@ class Watchdog(threading.Thread):
 
 
 class Jobs(threading.Thread):
-    """Background chores, whoever is logged in: calendar import (hourly) and publishing the plan through
-    Boekenwurm (every 5 minutes, only when it changed)."""
+    """Background chores, whoever is logged in: calendar import (hourly)."""
     daemon = True
 
     def __init__(self):
         super().__init__(name="jobs")
         self.stop = threading.Event()
         self.last_sync = 0
-        self.last_publish = 0
 
     def run(self):
         self.stop.wait(20)
         while not self.stop.is_set():
-            from . import ical, verify_boekenwurm
+            from . import ical
             now = time.time()
             try:
                 if now - self.last_sync > 3600 and db.get_setting("ical_feeds"):
                     self.last_sync = now
                     ical.sync()
-            except Exception as e:  # noqa: BLE001
-                db.log("calendar-error", repr(e)[:300])
-            try:
-                if now - self.last_publish > 300 and verify_boekenwurm.status()["paired"]:
-                    self.last_publish = now
-                    ical.publish()
             except Exception as e:  # noqa: BLE001
                 db.log("calendar-error", repr(e)[:300])
             self.stop.wait(60)

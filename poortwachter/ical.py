@@ -7,8 +7,8 @@ sessions automatically, with their real start time and length. When an event
 moves or is cancelled, the session follows (from tomorrow on: today is fixed).
 
 Out: your plan for the coming week as an iCalendar, served locally at
-/calendar.ics and, when paired with Boekenwurm, published through it at a
-secret address Google Calendar can subscribe to.
+/calendar.ics for calendar apps on this computer (Thunderbird, GNOME
+Calendar). Nothing is published online.
 
 Standard library only; handles the iCalendar that Google, Outlook and Apple
 publish: time zones, all-day events (skipped), RRULE (DAILY, WEEKLY with BYDAY,
@@ -437,34 +437,3 @@ def plan_ics(now=None):
             lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
     return "\r\n".join(lines) + "\r\n"
-
-
-def publish(force_new_secret=False):
-    """Publish the plan through Boekenwurm (needs pairing). Returns the subscribe address, if known."""
-    from . import verify_boekenwurm as bw
-    if not bw.status()["paired"]:
-        raise ICalError("Pair Poortwachter with Boekenwurm first: the calendar is published through it.")
-    ics = plan_ics()
-    same = re.sub(r"DTSTAMP:\S+", "", ics)
-    cal = db.get_setting("bw_calendar") or {}
-    if same == cal.get("last_ics") and not force_new_secret and cal.get("secret"):
-        return feed_url()
-    try:
-        secret = bw.call_rpc("put_app_calendar", {"p_token": (db.get_setting("bw_pairing") or {}).get("token"),
-                                                  "p_ics": ics, "p_new_secret": bool(force_new_secret)})
-    except bw.BWError as e:
-        raise ICalError(str(e)) from None
-    if secret:
-        cal["secret"] = secret
-    cal["last_ics"] = same
-    cal["at"] = time.time()
-    db.set_setting("bw_calendar", cal)
-    return feed_url()
-
-
-def feed_url():
-    cal = db.get_setting("bw_calendar") or {}
-    url = db.get_setting("bw_url")
-    if not cal.get("secret") or not url:
-        return None
-    return f"{url}/functions/v1/calendar?f={cal['secret']}"

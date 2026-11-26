@@ -1078,12 +1078,13 @@ async function viewSettings() {
       <div>
         <div class="card">
           <h2>Boekenwurm</h2>
-          ${s.bw.paired ? `<p class="ok">✓ Paired as “${esc(s.bw.paired_name)}”</p>
-            <p class="muted">Poortwachter sees Boekenwurm's daily numbers: pages, active reading minutes, cards, whether you wrote in the diary, and which reading was at or above your level. Never your books or diary text. Disconnect it any time in Boekenwurm (Account → Settings → Connected apps).</p>
+          ${s.bw.paired ? `${s.bw.approved ? `<p class="ok">✓ Connected as “${esc(s.bw.paired_name)}”</p>` : `<p><b>Almost there:</b> in Boekenwurm, <b>Allow</b> the request from “${esc(s.bw.paired_name)}” (Account → Settings → Connected apps), then press Test below.</p>`}
+            <p class="muted">Poortwachter sees today's numbers only: pages, active reading minutes, cards, whether you wrote in the diary, and which reading was at or above your level. Never your books or diary text. Unused for 90 days, the connection expires; disconnect it any time in Boekenwurm.</p>
             <div class="row"><button class="ghost" id="b-test">Test: today's numbers</button><button class="danger" id="b-unpair">Unpair</button></div>`
           : `<ol class="steps">
-              <li>Open Boekenwurm → <b>Account → Settings → Connected apps</b> → <b>Pair Poortwachter</b>.</li>
+              <li>Open Boekenwurm → <b>Account → Settings → Connected apps</b> → <b>Pair Poortwachter</b>, read what will be shared and agree.</li>
               <li>Type the code it shows here (valid 10 minutes):</li>
+              <li>Back in Boekenwurm, <b>Allow</b> Poortwachter's request.</li>
             </ol>
             <div class="row"><input type="text" id="b-pair" placeholder="K7QM-3XPA" maxlength="12" autocomplete="off" spellcheck="false" style="max-width:200px;letter-spacing:.15em;font-size:1.15rem;text-transform:uppercase"><button id="b-pair-go">Pair</button></div>
             ${s.bw.signed_in ? `<p class="hint">You're also signed in the older way (${esc(s.bw.email)}). That still works, but pairing adds active reading time, levels and the diary.</p>` : ''}`}
@@ -1108,7 +1109,7 @@ async function viewSettings() {
           <div class="row"><button class="small ghost" id="r-add">+ Keyword</button><button class="small" id="cal-save">Save &amp; sync</button><button class="small ghost" id="cal-test">Show next week's events</button></div>
           <div id="cal-msg" class="hint"></div>
           <hr>
-          <h3>Your study plan in Google Calendar</h3>
+          <h3>Your study plan as a calendar</h3>
           <div id="feed-out" class="muted">Laden…</div>
         </div>
         <div class="card">
@@ -1144,7 +1145,7 @@ async function viewSettings() {
   $('#a-test').onclick = (e) => guard(async () => { const d = await api('/api/anki/decks'); $('#a-out').innerHTML = d.length ? 'Decks: ' + d.map(esc).join(' · ') : 'No decks found.'; }, e.target);
   $('#sp-save').onclick = (e) => guard(() => save({ speaking_prompts: $('#sp').value.split('\n') }), e.target);
   if ($('#b-pair-go')) {
-    $('#b-pair-go').onclick = (e) => guard(async () => { await post('/api/bw/pair', { code: $('#b-pair').value }); toast('Paired with Boekenwurm.'); viewSettings(); }, e.target);
+    $('#b-pair-go').onclick = (e) => guard(async () => { await post('/api/bw/pair', { code: $('#b-pair').value }); toast('Code accepted. Now allow Poortwachter in Boekenwurm.'); viewSettings(); }, e.target);
     $('#b-pair').onkeydown = (ev) => { if (ev.key === 'Enter') $('#b-pair-go').click(); };
   }
   if ($('#b-unpair')) $('#b-unpair').onclick = (e) => guard(async () => {
@@ -1155,9 +1156,10 @@ async function viewSettings() {
   if ($('#b-out')) $('#b-out').onclick = (e) => guard(async () => { await post('/api/bw/logout'); viewSettings(); }, e.target);
   if ($('#b-test')) $('#b-test').onclick = (e) => guard(async () => {
     const r = await api('/api/bw/test');
+    if (r.summary && !s.bw.approved) { viewSettings(); return; }
     const x = r.summary;
     $('#b-msg').innerHTML = x
-      ? `Today: <b>${x.pages_at_level}</b> pages and <b>${x.active_minutes_at_level}</b> active min at your level (${x.pages} pages, ${x.active_minutes} min in all) · ${x.cards_reviewed} cards · diary ${x.diary_done ? '✓' : 'not yet'}${x.rank ? ` · rank ${esc(x.rank)}` : ''}`
+      ? `Today: <b>${x.pages_at_level}</b> pages and <b>${x.active_minutes_at_level}</b> active min at your level (${x.pages} pages, ${x.active_minutes} min in all) · ${x.cards_reviewed} cards · diary ${x.diary_done ? '✓' : 'not yet'}`
       : `Today: ${r.reading.pages} pages · ${r.reading.minutes} min · ${r.cards} cards`;
   }, e.target);
   $('#b-ppp-save').onclick = (e) => guard(() => save({ bw_paragraphs_per_page: +$('#b-ppp').value }), e.target);
@@ -1198,16 +1200,9 @@ async function viewSettings() {
   api('/api/calendars/feed').then((f) => {
     const st = f.status || {};
     $('#feed-out').innerHTML = (st.at ? `<p class="hint">Calendars last synced ${new Date(st.at * 1000).toLocaleString()} (${st.sessions ?? 0} sessions found).</p>` : '')
-      + (s.bw.paired
-        ? (f.url
-          ? `<p>Subscribe in Google Calendar: <b>Other calendars → + → From URL</b>, and paste:</p><div class="row"><input type="text" readonly value="${esc(f.url)}" id="feed-url" style="flex:1"><button class="small" id="feed-copy">Copy</button></div>
-             <p class="hint">Google refreshes subscribed calendars a few times a day, so changes show up with a delay. Mystery tasks stay a mystery. <button class="small ghost" id="feed-new">New address</button> stops the old one.</p>`
-          : '<p>Not published yet. <button class="small" id="feed-pub">Publish my plan</button></p>')
-        : '<p>Pair with Boekenwurm (above) to publish your plan at an address Google Calendar can read. Google can\'t reach this computer directly.</p>')
-      + `<p class="hint">For a calendar app on this computer (Thunderbird, GNOME Calendar): <code>${esc(f.local)}</code></p>`;
-    if ($('#feed-copy')) $('#feed-copy').onclick = () => { navigator.clipboard?.writeText($('#feed-url').value).then(() => toast('Copied.'), () => $('#feed-url').select()); };
-    if ($('#feed-pub')) $('#feed-pub').onclick = (e) => guard(async () => { await post('/api/calendars/publish', {}); viewSettings(); }, e.target);
-    if ($('#feed-new')) $('#feed-new').onclick = (e) => guard(async () => { if (!confirm('Make a new address? The old one stops working, so re-subscribe in Google Calendar.')) return; await post('/api/calendars/publish', { new_address: true }); viewSettings(); }, e.target);
+      + `<p>For a calendar app on this computer (Thunderbird, GNOME Calendar), subscribe to:</p><div class="row"><input type="text" readonly value="${esc(f.local)}" id="feed-url" style="flex:1"><button class="small" id="feed-copy">Copy</button></div>
+         <p class="hint">Your plan for the coming week stays on this computer: it isn't published online, so Google Calendar on the web can't subscribe to it.</p>`;
+    $('#feed-copy').onclick = () => { navigator.clipboard?.writeText($('#feed-url').value).then(() => toast('Copied.'), () => $('#feed-url').select()); };
   }).catch(() => {});
   $('#limits-save').onclick = (e) => guard(async () => {
     const category_caps = {};

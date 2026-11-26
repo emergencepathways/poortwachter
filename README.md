@@ -119,10 +119,13 @@ The full install and management guide is the "Poortwachter: install & management
 
 ## What's new in v3
 
-- **Pair with Boekenwurm** (Settings → Boekenwurm): type the code from Boekenwurm → Account → Settings → Connected apps.
-  Boekenwurm reading then counts by **pages or active minutes**, at or above your level, plus flashcards and the
-  Boekenwurm diary. Only numbers are shared, never text.
+- **Pair with Boekenwurm** (Settings → Boekenwurm): in Boekenwurm → Account → Settings → Connected apps, agree to
+  what is shared, type the code here, then **Allow** the request in Boekenwurm. Boekenwurm reading then counts by
+  **pages or active minutes**, at or above your level, plus flashcards and the Boekenwurm diary. Only today's numbers
+  are shared, never text or history; unused for 90 days, the connection expires. (Connected apps are for the owner's
+  own use and will be removed from Boekenwurm before it goes public; the Boekenwurm tasks then report that and the
+  other tasks keep working.)
 - **Diary prompts and LanguageTool grammar hints** on writing tasks; **several Anki decks** per activity.
-- **Calendars** (Settings → Calendars): calendar events become sessions by keyword; your plan can be subscribed to in
-  Google Calendar (published through Boekenwurm).
+- **Calendars** (Settings → Calendars): calendar events become sessions by keyword; your plan is available to calendar
+  apps on this computer at http://127.0.0.1:7623/calendar.ics (nothing is published online).
 - **App window**: "Poortwachter" in the menu opens its own window.

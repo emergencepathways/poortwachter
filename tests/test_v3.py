@@ -1,5 +1,6 @@
 """Tests for v3: Boekenwurm pairing and its daily summary, several Anki decks, the diary prompts, LanguageTool hints,
-calendars in (iCal → sessions) and out (the plan as a feed), and textbook pages as images."""
+calendars in (iCal → sessions) and out (the plan as a local feed), and textbook pages as images.
+The fake Boekenwurm behaves like migrations 0013 + 0014: claim → pending → allowed, today's numbers only."""
 
 import datetime as dt
 import json
@@ -20,11 +21,13 @@ TOKEN = "t" * 90
 
 
 class FakeBoekenwurm(BaseHTTPRequestHandler):
-    """connect.json (the site) and the three RPCs (the database), in one fake server."""
+    """connect.json (the site) and the two RPCs (the database), in one fake server."""
     log_message = lambda *a: None  # noqa: E731
     summary = {}
     calls = []
     revoked = False
+    approved = True
+    too_many = False
 
     def _send(self, obj, code=200):
         data = json.dumps(obj).encode()
@@ -44,15 +47,17 @@ class FakeBoekenwurm(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         FakeBoekenwurm.calls.append((self.path, body, self.headers.get("apikey")))
         if self.path == "/rest/v1/rpc/claim_pairing_code":
+            if FakeBoekenwurm.too_many:
+                return self._send({"error": "too_many", "message": "Too many tries."})
             if body["p_code"].replace("-", "").upper() != "K7QM3XPA":
-                return self._send({"message": "That code isn't valid or has expired. Make a new one in Boekenwurm."}, 400)
-            return self._send({"token": TOKEN, "connection_id": "c1", "app": "poortwachter"})
-        if body.get("p_token") != TOKEN or FakeBoekenwurm.revoked:
-            return self._send({"message": "This app is no longer connected to Boekenwurm. Pair it again."}, 401)
+                return self._send({"error": "invalid", "message": "That code isn't valid or has expired."})
+            return self._send({"token": TOKEN, "connection_id": "c1", "app": "poortwachter", "status": "pending"})
         if self.path == "/rest/v1/rpc/connection_summary":
-            return self._send(FakeBoekenwurm.summary)
-        if self.path == "/rest/v1/rpc/put_app_calendar":
-            return self._send("s" * 60 if not body.get("p_new_secret") and len(FakeBoekenwurm.calls) < 50 else "n" * 60)
+            if body.get("p_token") != TOKEN or FakeBoekenwurm.revoked:
+                return self._send({"error": "gone", "message": "This app is no longer connected."})
+            if not FakeBoekenwurm.approved:
+                return self._send({"error": "pending", "message": "Allow it in Boekenwurm."})
+            return self._send(dict(FakeBoekenwurm.summary, day=body["p_day"]))
         self._send({}, 404)
 
 
@@ -61,10 +66,10 @@ class BoekenwurmPairingTests(Base):
         super().setUp()
         FakeBoekenwurm.calls = []
         FakeBoekenwurm.revoked = False
-        FakeBoekenwurm.summary = {"version": 1, "sessions": 2, "paragraphs": 30, "paragraphs_at_level": 20,
-                                  "pages": 9, "pages_at_level": 3, "active_minutes": 31.5,
-                                  "active_minutes_at_level": 12.0, "cards_reviewed": 25, "diary_done": True,
-                                  "rank": "A2"}
+        FakeBoekenwurm.approved = True
+        FakeBoekenwurm.too_many = False
+        FakeBoekenwurm.summary = {"version": 2, "pages": 9, "pages_at_level": 3, "active_minutes": 31.5,
+                                  "active_minutes_at_level": 12.0, "cards_reviewed": 25, "diary_done": True}
         self.srv = HTTPServer(("127.0.0.1", 0), FakeBoekenwurm)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.site = f"http://127.0.0.1:{self.srv.server_port}"
@@ -80,6 +85,7 @@ class BoekenwurmPairingTests(Base):
         self.assertIn("didn't work", str(cm.exception))
         st = bw.pair("k7qm-3xpa", self.site)
         self.assertTrue(st["paired"])
+        self.assertFalse(st["approved"])  # until the reader allows it in Boekenwurm
         self.assertTrue(st["paired_name"].startswith("Poortwachter on "))
         path, body, key = FakeBoekenwurm.calls[-1]
         self.assertEqual(key, "pub")
@@ -99,17 +105,32 @@ class BoekenwurmPairingTests(Base):
         self.assertTrue(bw.check_reading({"metric": "pages", "target": 9}, day)["ok"])
         self.assertTrue(bw.check_cards({"cards": 25}, day)["ok"])
         self.assertTrue(bw.check_diary({}, day)["ok"])
-        # The window is the study day, 02:00 to 02:00, and the diary day is the study day.
+        # Only the study day is asked for (Boekenwurm works out 02:00 → 02:00 in this time zone): no history window.
         sent = [c for c in FakeBoekenwurm.calls if c[0].endswith("connection_summary")][-1][1]
-        start = dt.datetime.fromisoformat(sent["p_from"])
-        end = dt.datetime.fromisoformat(sent["p_to"])
-        self.assertEqual(end - start, dt.timedelta(days=1))
-        self.assertEqual(start.astimezone().hour, 2)
+        self.assertEqual(set(sent), {"p_token", "p_day", "p_tz", "p_start_hour"})
         self.assertEqual(sent["p_day"], day)
+        self.assertEqual(sent["p_start_hour"], 2)
+        self.assertTrue(sent["p_tz"])
+        self.assertTrue(bw.status()["approved"])  # a summary means the reader allowed it
         # The summary is cached for a minute
         n = len(FakeBoekenwurm.calls)
         bw.check_cards({"cards": 1}, day)
         self.assertEqual(len(FakeBoekenwurm.calls), n)
+
+    def test_waiting_for_approval(self):
+        bw = self.bw
+        FakeBoekenwurm.approved = False
+        bw.pair("K7QM-3XPA", self.site)
+        r = bw.check_diary({}, self.roster.today())
+        self.assertFalse(r["ok"])
+        self.assertIn("allow Poortwachter", r["message"])
+        self.assertTrue(bw.status()["paired"])  # still paired, just waiting
+
+    def test_too_many_tries(self):
+        FakeBoekenwurm.too_many = True
+        with self.assertRaises(self.bw.BWError) as cm:
+            self.bw.pair("K7QM-3XPA", self.site)
+        self.assertIn("wait 10 minutes", str(cm.exception))
 
     def test_disconnected_in_boekenwurm(self):
         bw = self.bw
@@ -132,20 +153,11 @@ class BoekenwurmPairingTests(Base):
         self.assertTrue(self.actions.check(tid)["ok"])
         self.assertEqual(r.task(tid)["status"], "done")
 
-    def test_publish_calendar(self):
+    def test_no_calendar_is_published(self):
         from poortwachter import ical
-        with self.assertRaises(ical.ICalError):
-            ical.publish()
+        self.assertFalse(hasattr(ical, "publish"))
         self.bw.pair("K7QM-3XPA", self.site)
-        url = ical.publish()
-        self.assertEqual(url, f"{self.site}/functions/v1/calendar?f={'s' * 60}")
-        sent = [c for c in FakeBoekenwurm.calls if c[0].endswith("put_app_calendar")]
-        self.assertEqual(len(sent), 1)
-        self.assertTrue(sent[0][1]["p_ics"].startswith("BEGIN:VCALENDAR"))
-        ical.publish()  # nothing changed: nothing sent
-        self.assertEqual(len([c for c in FakeBoekenwurm.calls if c[0].endswith("put_app_calendar")]), 1)
-        url2 = ical.publish(force_new_secret=True)
-        self.assertTrue(url2.endswith("n" * 60))
+        self.assertFalse([c for c in FakeBoekenwurm.calls if "calendar" in c[0]])
 
 
 class AnkiDecksTests(Base):

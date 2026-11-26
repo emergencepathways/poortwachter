@@ -8,12 +8,16 @@ A personal Linux Mint app that keeps Steam closed until the owner's daily Dutch 
 - `poortwachter/`: Python 3, standard library only. `roster.py` (day rules, generation, carryover, lock),
   `events.py` (sessions), `pto.py` (earned free days, ledger in whole hours), `textbook.py` (sets, grading
   via the Claude API), `actions.py` (how each task kind is completed), `verify_*.py` (Anki, Boekenwurm),
-  `watchdog.py` (closes Steam; `Jobs` runs calendar import and publishing), `server.py` (local web app + JSON API
-  on 127.0.0.1:7623), `__main__.py` (CLI), `ical.py` (calendar import → sessions, the plan as a feed),
+  `watchdog.py` (closes Steam; `Jobs` runs calendar import), `server.py` (local web app + JSON API
+  on 127.0.0.1:7623), `__main__.py` (CLI), `ical.py` (calendar import → sessions, the plan as a local feed),
   `grammar.py` (LanguageTool hints), `diary.py` (Boekenwurm's 20 diary prompts).
-- Boekenwurm: paired through Boekenwurm's Connected apps (its `docs/CONNECTED_APPS.md`, migration 0013): Poortwachter
-  reads `connect.json`, trades a pairing code for a token, then calls `connection_summary()` and `put_app_calendar()`.
-  The older email-code sign-in is a fallback only.
+- Boekenwurm: paired through Boekenwurm's Connected apps (its `docs/CONNECTED_APPS.md`, migrations 0013 + 0014):
+  Poortwachter reads `connect.json`, trades a pairing code for a token (`claim_pairing_code`, which answers
+  `{error}` instead of raising), waits for the reader to allow it, then calls
+  `connection_summary(p_token, p_day, p_tz, p_start_hour=2)` for today only (`{error: pending|gone}` when not
+  allowed / gone). Boekenwurm stores nothing for Poortwachter: no calendar. Boekenwurm will remove Connected apps
+  before its public release (its `docs/PRELAUNCH.md`), so Boekenwurm tasks must fail with a clear message, never
+  break the roster. The older email-code sign-in is a fallback only.
 - `web/`: plain HTML/CSS/JS, no build step, works offline.
 - `bin/`, `systemd/`, `desktop/`, `install.sh`, `uninstall.sh`: install and update. `bin/poortwachter-window` is the
   app window (GTK + WebKit2, system python3).

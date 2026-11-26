@@ -2,6 +2,15 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [3.1.0] - 2026-11-26
+
+Follows Boekenwurm's privacy hardening of Connected apps (migration 0014). Needs that migration.
+
+- **Allow step**: after you type the code, Boekenwurm asks you to **Allow** Poortwachter; Settings shows "Almost there" until you do, and Boekenwurm tasks say they're waiting.
+- **Today only**: Poortwachter asks Boekenwurm for one study day (today, or yesterday before 02:00) with your time zone and the 02:00 reset, never a time range or history. Paragraph targets are gone (pages or active minutes).
+- Clear messages for a mistyped or expired code and for too many tries (wait 10 minutes). A connection that was disconnected or unused for 90 days unpairs Poortwachter with a message.
+- **No more Google Calendar feed through Boekenwurm**: Boekenwurm no longer stores anything for apps. Your plan is still at http://127.0.0.1:7623/calendar.ics for calendar apps on this computer, and calendar import into sessions is unchanged.
+
 ## [3.0.0] - 2026-11-26
 
 - **Pair with Boekenwurm**: a code from Boekenwurm → Account → Settings → Connected apps. Poortwachter then gets Boekenwurm's daily numbers (never text): pages, active reading minutes, cards reviewed, diary written, and which reading was at or above your level. Needs Boekenwurm with the Connected apps update (migration 0013).
