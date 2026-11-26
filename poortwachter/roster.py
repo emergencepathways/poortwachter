@@ -78,15 +78,20 @@ def activity(aid):
 
 
 def caps():
-    return {k: int(v) for k, v in (db.get_setting("category_caps") or {}).items() if v}
+    c = {k: int(v) for k, v in (db.get_setting("category_caps") or {}).items() if v}
+    if "textbook" in c:  # the textbook cap never undercuts the chosen session length
+        c["textbook"] = max(c["textbook"], int(db.get_setting("textbook_minutes") or 20))
+    return c
 
 
 def _textbook_minutes(a):
     """A textbook task takes as long as the next set in the queue."""
     if a["kind"] != "textbook":
         return a["est_min"]
-    from . import textbook
+    from . import oefenen, textbook
     bid = a["params"].get("textbook_id") or db.get_setting("active_textbook")
+    if bid and oefenen.has_bank(bid):
+        return oefenen.target_seconds() // 60
     s = textbook.next_set(bid) if bid else None
     est = s["est_min"] if s else a["est_min"]
     cap = caps().get("textbook")
@@ -189,6 +194,36 @@ def _previous_work_day(day):
     return row["day"] if row else None
 
 
+def ramp_bonus(weekday):
+    """Extra weekday minutes earned by the ramp setting (weekends never change)."""
+    r = db.get_setting("ramp") or {}
+    if not r.get("enabled") or weekday >= 5:
+        return 0
+    return int((db.get_setting("ramp_state") or {}).get("bonus", 0))
+
+
+def settle_ramp(day, complete):
+    """Called once per settled day: completed weekdays in a row raise the weekday budget by `step` minutes per day
+    after `after` days, up to `max` minutes. A missed weekday restarts the count (the minutes reached stay); weekends
+    and free days don't count either way. Returns True when the bonus changed."""
+    r = db.get_setting("ramp") or {}
+    st = dict(db.get_setting("ramp_state") or {"streak": 0, "bonus": 0})
+    if dt.date.fromisoformat(day).weekday() >= 5:
+        return False
+    before = st.get("bonus", 0)
+    if complete:
+        st["streak"] = int(st.get("streak", 0)) + 1
+        if r.get("enabled") and st["streak"] > int(r.get("after", 7)):
+            base = int(db.get_setting("schedule")["0"].get("budget", 90))
+            room = max(0, int(r.get("max", 120)) - base)
+            st["bonus"] = min(room, int(st.get("bonus", 0)) + int(r.get("step", 5)))
+    else:
+        st["streak"] = 0
+    st["through"] = day
+    db.set_setting("ramp_state", st)
+    return st.get("bonus", 0) != before
+
+
 def generate_tasks(day, rng=None):
     """Draw a fresh plan for a day. Returns task dicts (not saved)."""
     from . import events, pto
@@ -199,9 +234,10 @@ def generate_tasks(day, rng=None):
         # Free day: sessions still show up, but nothing is required.
         return [_event_row(day, e, i, counts=0) for i, e in enumerate(sessions)]
 
-    wd = dt.date.fromisoformat(day).weekday()
+    d = dt.date.fromisoformat(day)
+    wd = d.weekday()
     sched = db.get_setting("schedule")[str(wd)]
-    budget = int(sched.get("budget", 60))
+    budget = int(sched.get("budget", 60)) + ramp_bonus(wd)
     acts = {a["id"]: _with_minutes(a) for a in activities(enabled_only=True)}
     out = [_event_row(day, e, i) for i, e in enumerate(sessions)]
     left = budget - sum(e["minutes"] for e in sessions)
@@ -209,6 +245,8 @@ def generate_tasks(day, rng=None):
     cat_minutes = {}
     core = []
     core_ids = [i for i in sched.get("core", []) if i in acts]
+    if d.toordinal() % 2 == 0:  # every other day (writing, by default)
+        core_ids += [i for i in db.get_setting("writing_every_other_day") or [] if i in acts and i not in core_ids]
     if sessions:
         # Event + small minimum: the minimum task is always required; other
         # core tasks only while there's budget left after the sessions.

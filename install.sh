@@ -50,6 +50,7 @@ install -m 755 "$HERE/bin/poortwachter" /usr/local/bin/poortwachter
 install -m 755 "$HERE/bin/poortwachter-steam" /usr/local/bin/poortwachter-steam
 install -m 755 "$HERE/bin/poortwachter-update" /usr/local/bin/poortwachter-update
 install -m 755 "$HERE/bin/poortwachter-window" /usr/local/bin/poortwachter-window
+install -m 755 "$HERE/bin/poortwachter-whisper-setup" /usr/local/bin/poortwachter-whisper-setup
 
 echo "==> Config /etc/poortwachter.conf"
 if [ ! -f /etc/poortwachter.conf ]; then

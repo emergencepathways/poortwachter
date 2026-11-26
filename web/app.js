@@ -74,7 +74,7 @@ function kindSummary(t) {
     case 'timer': return `${p.minutes} min timer${p.note_words ? ` + ${p.note_words}-word note` : ''}`;
     case 'note': return `${p.min_words}+ words in Dutch${p.prompt_set === 'diary' ? ' · diary prompt' : ''}`;
     case 'recording': { const s = p.min_seconds || 60; return `Record ${s < 60 ? s + ' s' : Math.round(s / 60 * 10) / 10 + ' min'}`; }
-    case 'textbook': return 'Graded by Claude';
+    case 'textbook': return 'Oefenen: one question at a time';
     case 'honor': return t.source === 'event' ? `Session${p.place ? ' · ' + p.place : ''}. Tick it off afterwards` : 'Honour check-off';
     default: return '';
   }
@@ -250,6 +250,7 @@ async function openTask(id) {
     $('#reveal').onclick = (e) => guard(async () => { await post(`/api/tasks/${id}/reveal`); await loadState(); openTask(id); }, e.target);
     return;
   }
+  if (t.status === 'done' && t.kind === 'textbook' && t.day === S.state?.today?.day && await hasBank()) return panelOefenen(t);
   if (t.status === 'done') return openDone(t);
   const fn = { anki: panelCheck, bw_reading: panelCheck, bw_cards: panelCheck, bw_diary: panelCheck, timer: panelTimer, note: panelNote, recording: panelRecording, textbook: panelTextbook, honor: panelHonor }[t.kind];
   if (fn) fn(t);
@@ -493,7 +494,11 @@ async function panelRecording(t) {
 }
 
 // -- textbook (study view)
+async function hasBank() {
+  try { return ((await api('/api/oefenen')).units || []).length > 0; } catch { return false; }
+}
 async function panelTextbook(t) {
+  if (await hasBank()) return panelOefenen(t);
   const target = await api(`/api/tasks/${t.id}/textbook`);
   if (target.error) {
     openPanel(`${panelHead(t)}<div class="card"><p class="err">${esc(target.error)}</p><a class="btn" href="#textbook" onclick="closePanel(true)">Go to Textbook</a></div>`);
@@ -502,6 +507,232 @@ async function panelTextbook(t) {
   await loadBooks();
   const book = S.books.books.find((b) => b.id === target.textbook_id);
   studyView({ book, task: t, target });
+}
+
+
+// -- textbook practice (oefenen): one question at a time, checked against the book's key
+const pageSrc = (u, printed) => `/files/textbook/${u.textbook_id}/p/${printed + (u.page_offset || 0)}.png`;
+const pagesLabel = (r) => `p. ${r[0]}${r[1] && r[1] !== r[0] ? '–' + r[1] : ''}`;
+
+async function panelOefenen(t) {
+  let st = await api(`/api/tasks/${t.id}/oefenen`);
+  let secs = st.seconds; let lastTick = Date.now(); let shownPage = null; let beatIv = null; let tickIv = null;
+  let lastResult = null; let unitResult = null;
+  const overview = await api('/api/oefenen');
+  openPanel(`
+    <div class="study">
+      <div class="pdfpane-wrap">
+        <div class="pdfbar row"><button class="small ghost" id="pg-prev" aria-label="Previous page">◀</button><b id="pageno"></b><button class="small ghost" id="pg-next" aria-label="Next page">▶</button>
+          <span style="flex:1"></span><span id="rules"></span></div>
+        <div class="pdfpane" id="pdfpane"><img id="pdfimg" alt="Textbook page"></div>
+      </div>
+      <div class="side">
+        <div class="spread">
+          <div><p class="muted" style="margin:0">📘 Textbook · ${Math.round(st.target / 60)} min${st.hardcore ? ' · hardcore (70%+)' : ''}</p><h1 id="panel-title" style="margin:2px 0 0">Oefenen</h1></div>
+          <div style="text-align:right"><div class="clock" id="oclock" style="font-size:2rem;margin:0">00:00</div><div class="muted small" id="ostats"></div></div>
+        </div>
+        <div class="bar"><span id="obar"></span></div>
+        <div id="obanner"></div>
+        <div id="obody"></div>
+        <details style="margin-top:18px"><summary>Choose a chapter or exercise · Did it with italki</summary>
+          <label for="ofocus">Work on</label>
+          <div class="row"><select id="ofocus" style="flex:1">${overview.units.filter((u) => !['partner', 'website'].includes(u.mode)).map((u) => `<option value="${esc(u.id)}">${esc(`H${u.chapter} · ${u.section} ${u.title}`)}${u.status !== 'open' ? ' · ' + esc(u.status) : ''}</option>`).join('')}</select><button class="small ghost" id="ofocus-go">Go</button></div>
+          <p class="hint">Your place in the book is kept: exercises you skip stay open, and the textbook tab can switch back to the full book.</p>
+          <hr>
+          <p><b>Did this with my italki teacher</b> (replaces today's textbook task; the book stays where it was).</p>
+          <select id="oit-units" multiple size="6" style="width:100%">${overview.units.map((u) => `<option value="${esc(u.id)}">${esc(`H${u.chapter} · ${u.section} ${u.title}`)} (p. ${esc(u.pages.join('–'))})</option>`).join('')}</select>
+          <div class="row"><div style="flex:1"><label for="oit-from">or pages</label><input type="number" id="oit-from" min="1"></div><div style="flex:1"><label for="oit-to">to</label><input type="number" id="oit-to" min="1"></div></div>
+          <label for="oit-note">What did you do?</label><textarea id="oit-note" rows="3" placeholder="Met mijn docent heb ik … gedaan."></textarea>
+          <button id="oit-go" style="margin-top:8px">Count it</button>
+        </details>
+      </div>
+    </div>`, { wide: true });
+
+  const showPage = (u, p) => {
+    if (!u || !p) return;
+    shownPage = p;
+    $('#pdfimg').src = pageSrc(u, p);
+    $('#pageno').textContent = `p. ${p}`;
+    $('#pdfpane').scrollTop = 0;
+  };
+  const draw = () => {
+    $('#oclock').textContent = fmtClock(secs);
+    $('#oclock').style.color = secs >= st.target ? 'var(--good)' : '';
+    $('#obar').style.width = Math.min(100, (secs / st.target) * 100) + '%';
+    $('#ostats').textContent = `${st.answered} answered · ${st.correct}/${st.total} right`;
+  };
+  const banner = () => {
+    const b = [];
+    if (st.done) {
+      b.push(`<div class="card ok-card"><b>✓ Today's textbook task is done.</b> Keep going if you like: past ${Math.round(2 * st.target / 60)} min with at least one more exercise earns +1 hour toward a free day${st.bonus_hour ? ' (earned ✓)' : ''}.</div>`);
+    } else if (secs >= st.target && st.unit) {
+      b.push('<div class="card">⏱ Time\'s up: finish this exercise and the task counts.</div>');
+    } else if (secs >= st.target && !st.answered) {
+      b.push('<div class="card err">Nothing answered yet: if the timer reaches the target with no answers, the session starts over.</div>');
+    }
+    if (st.long && !st.done) b.push('<p class="hint">This one is taking long. That\'s fine; it will be marked so you can see which exercises were hard.</p>');
+    $('#obanner').innerHTML = b.join('');
+  };
+  const beat = async (run) => {
+    try {
+      const r = await post(`/api/tasks/${t.id}/oefenen/beat`, { running: run });
+      const wasDone = st.done;
+      Object.assign(st, r); secs = r.seconds; lastTick = Date.now();
+      if (r.voided_now) { toast('No answers in the whole session, so it starts over from zero.', true); render(); }
+      if (!wasDone && r.done) { toast('Textbook task done! 🎉'); loadState(); }
+      draw(); banner();
+    } catch (e) { toast(e.message, true); }
+  };
+  const visible = () => document.visibilityState === 'visible';
+  beatIv = setInterval(() => beat(visible()), 10000);
+  tickIv = setInterval(() => { const n = Date.now(); if (visible()) secs += (n - lastTick) / 1000; lastTick = n; draw(); }, 500);
+  panelCleanup = () => { clearInterval(beatIv); clearInterval(tickIv); post(`/api/tasks/${t.id}/oefenen/beat`, { running: false }).catch(() => {}); };
+
+  const set = (r) => { Object.assign(st, r.state || r); secs = st.seconds; lastTick = Date.now(); };
+  const go = async (path, body) => { const r = await post(`/api/tasks/${t.id}/oefenen/${path}`, body); set(r); unitResult = null; lastResult = null; render(); return r; };
+
+  const unitHead = (u) => `
+    <div class="card" style="margin-top:12px">
+      <p class="muted" style="margin:0">Hoofdstuk ${u.chapter}${u.chapter_title ? ' · ' + esc(u.chapter_title) : ''} · ${esc(u.section)} ${esc(u.section_title || '')}</p>
+      <h2 style="margin:4px 0">${esc(u.title)}</h2>
+      ${u.read.length ? `<p class="small">📖 Rules and text: ${u.read.map((r) => `<a href="#" data-pg="${r[0]}">${pagesLabel(r)}</a>`).join(', ')}</p>` : ''}
+      <p lang="nl"><b>${esc(u.instruction)}</b></p>
+      ${u.example ? `<p lang="nl" class="muted">Voorbeeld: ${esc(u.example)}</p>` : ''}
+      ${u.words.length ? `<p lang="nl" class="chips">${u.words.map((w) => `<span class="chip">${esc(w)}</span>`).join(' ')}</p>` : ''}
+      ${u.context ? `<details><summary>Tekst bij de opdracht</summary><p lang="nl" style="white-space:pre-wrap">${esc(u.context)}</p></details>` : ''}
+      ${u.audio ? (u.has_audio ? `<audio controls preload="auto" src="/files/audio/${encodeURIComponent(u.id)}" style="width:100%" id="oaudio"></audio><p class="hint">Replay as often as you need: the time counts.</p>`
+        : `<div class="card"><p>This exercise uses the book's audio. Download the track from the book's website (www.coutinho.nl/nederlandsinactie4) and add it here:</p>
+           <input type="file" id="oaud" accept="audio/*"> <button class="small" id="oaud-go">Add audio</button>
+           <p class="hint">Or press “Skip for today”.</p></div>`) : ''}
+    </div>`;
+
+  const qInput = (q) => {
+    if (q.type === 'choice') return `<div class="row wrap" id="ochoices">${q.options.map((o) => `<button class="ghost" data-choice="${esc(o)}">${esc(o)}</button>`).join('')}</div>`;
+    if (q.type === 'speak') return `<div class="row"><button class="warm" id="orec">● Record your answer</button><span id="orecmsg" class="hint"></span></div>`;
+    if (q.type === 'sentence' || q.type === 'open') return `<textarea id="oans" rows="${q.type === 'open' ? 6 : 2}" lang="nl" spellcheck="false" placeholder="Schrijf je antwoord…"></textarea><button id="osend" style="margin-top:6px">Check</button>`;
+    return `<div class="row"><input type="text" id="oans" lang="nl" autocomplete="off" spellcheck="false" style="flex:1"><button id="osend">Check</button></div>`;
+  };
+
+  const verdictHtml = (r) => {
+    if (!r) return '';
+    const v = r.verdict;
+    if (v === 'right') return '<p class="ok">✓ Goed!</p>';
+    if (v === 'accent') return `<p class="ok">✓ Goed: <span lang="nl">${esc(r.expected)}</span>. ${esc(r.hint || '')}</p>`;
+    if (v === 'wrong') return `<p class="err">✗ The key says: <b lang="nl">${esc(r.expected)}</b>${r.hint ? ' · ' + esc(r.hint) : ''}</p>`;
+    if (v === 'review') return `<p class="muted">Not an exact match with the key (<span lang="nl">${esc(r.expected)}</span>): checked at the end of the exercise.</p>`;
+    return '<p class="muted">Saved: feedback at the end of the exercise.</p>';
+  };
+
+  const unitResultHtml = (ur) => `
+    <div class="card" style="margin-top:12px">
+      <div class="spread"><div><div class="score">${ur.correct} / ${ur.total}</div><div class="muted">${ur.percent}% ${ur.passed ? '✓' : '(under 70%)'}${ur.status === 'retry' ? ' · comes back later (hardcore)' : ''}</div></div>
+      <div style="flex:1;min-width:180px"><b>${esc(ur.title)}</b><br><span class="muted">${ur.minutes} min${ur.long ? ' · took long' : ''}</span>${ur.summary ? `<p>${esc(ur.summary)}</p>` : ''}</div></div>
+      ${ur.feedback_error ? `<p class="hint">${esc(ur.feedback_error)}</p>` : ''}
+    </div>
+    ${ur.results.filter((r) => r.correct !== true || r.feedback).map((r) => `
+      <div class="result-item ${r.correct === false ? 'wrong' : ''}">
+        <div class="q" lang="nl">${esc(r.n)}. ${esc(r.prompt)}</div>
+        <div>${r.correct === false ? '✗' : r.correct ? '✓' : '•'} <span lang="nl">${esc(r.given)}</span>${r.transcript ? ' <span class="muted">(heard)</span>' : ''}</div>
+        ${r.expected && r.correct !== true ? `<div class="fix" lang="nl">→ ${esc(r.corrected || r.expected)}</div>` : ''}
+        ${r.feedback ? `<dl><dd>${esc(r.feedback)}</dd></dl>` : ''}
+      </div>`).join('')}
+    <button class="big" id="onext" style="margin-top:10px">Next exercise →</button>`;
+
+  function render() {
+    const body = $('#obody');
+    draw(); banner();
+    if (st.resume_choice) {
+      const rc = st.resume_choice;
+      body.innerHTML = `<div class="card"><p><b>Where do you want to continue?</b></p>
+        <button class="big" data-resume="italki">After your italki work: ${esc(rc.italki.title)}</button>
+        <button class="big ghost" data-resume="book" style="margin-top:8px">Where you left off in the book: ${esc(rc.book.title)}</button></div>`;
+      $$('[data-resume]').forEach((b) => (b.onclick = () => guard(async () => { await go('resume', { choice: b.dataset.resume }); st.resume_choice = null; render(); }, b)));
+      return;
+    }
+    if (unitResult) {
+      body.innerHTML = unitResultHtml(unitResult);
+      $('#onext').onclick = (e) => guard(() => go('next'), e.target);
+      return;
+    }
+    if (!st.unit) {
+      body.innerHTML = st.empty ? '<div class="card">🎉 No exercises left in the book (or all are skipped for today). Choose one below, or add more to the bank.</div>'
+        : `<div class="card"><p>${st.answered ? 'Ready for the next exercise.' : 'Questions come one at a time, in the book’s order, from where you left off.'}</p><button class="big warm" id="ostart">${st.answered ? 'Next exercise →' : '▶ Start'}</button></div>`;
+      if ($('#ostart')) $('#ostart').onclick = (e) => guard(() => go('next'), e.target);
+      return;
+    }
+    const u = st.unit; const q = st.question;
+    if (shownPage === null || !u.pages.includes(shownPage)) showPage(u, u.pages[0]);
+    $('#rules').innerHTML = u.read.map((r) => `<button class="small ghost" data-pg="${r[0]}">📖 ${pagesLabel(r)}</button>`).join(' ');
+    body.innerHTML = unitHead(u) + (q ? `
+      <div class="card" style="margin-top:12px">
+        <p class="muted small" style="margin:0">Vraag ${q.index + 1} van ${q.of}</p>
+        <p lang="nl" style="font-size:1.25rem;margin:6px 0 12px;white-space:pre-line">${q.n ? `<b>${esc(q.n)}</b> ` : ''}${esc(q.prompt)}</p>
+        ${q.note ? `<p class="hint">${esc(q.note)}</p>` : ''}
+        ${qInput(q)}
+        <div id="overdict">${verdictHtml(lastResult)}</div>
+      </div>` : '') + `
+      <div class="row wrap" style="margin-top:10px">
+        <button class="small ghost" id="onotpossible" title="Takes it out of the book; it doesn't count">Not possible</button>
+        <button class="small ghost" id="odidnt" title="Skip it today; it comes back another day">Didn't work · skip for today</button>
+      </div>`;
+    $$('[data-pg]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); showPage(u, +a.dataset.pg); }));
+    const send = (val) => guard(async () => {
+      const r = await post(`/api/tasks/${t.id}/oefenen/answer`, { answer: val });
+      lastResult = r.result; unitResult = r.unit_result || null; set(r);
+      if (!st.done && r.state.done) { toast('Textbook task done! 🎉'); loadState(); }
+      render();
+      const inp = $('#oans'); if (inp) inp.focus();
+    });
+    if ($('#osend')) {
+      $('#osend').onclick = () => send($('#oans').value);
+      $('#oans').onkeydown = (e) => { if (e.key === 'Enter' && (e.target.tagName === 'INPUT' || e.ctrlKey)) { e.preventDefault(); send($('#oans').value); } };
+      $('#oans').focus();
+    }
+    $$('[data-choice]').forEach((b) => (b.onclick = () => send(b.dataset.choice)));
+    if ($('#orec')) wireSpeak(u);
+    if ($('#oaud-go')) $('#oaud-go').onclick = (e) => guard(async () => {
+      const f = $('#oaud').files[0]; if (!f) throw new Error('Choose the audio file first.');
+      await api(`/api/oefenen/units/${encodeURIComponent(u.id)}/audio`, { method: 'POST', raw: f, headers: { 'X-Ext': (f.name.split('.').pop() || 'mp3') } });
+      st = await api(`/api/tasks/${t.id}/oefenen`); render();
+    }, e.target);
+    $('#onotpossible').onclick = (e) => guard(async () => {
+      if (!confirm('Take this exercise out of the book? It won\'t count, and answers in it are dropped. (You can put it back in the Textbook tab.)')) return;
+      await go('notpossible');
+    }, e.target);
+    $('#odidnt').onclick = (e) => guard(() => go('didntwork'), e.target);
+  }
+
+  function wireSpeak(u) {
+    let rec; let chunks = []; let stream;
+    $('#orec').onclick = async () => {
+      if (rec && rec.state === 'recording') { rec.stop(); return; }
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { toast('Microphone access was blocked.', true); return; }
+      const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find((m) => MediaRecorder.isTypeSupported(m)) || '';
+      chunks = []; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+      rec.onstop = () => guard(async () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+        $('#orecmsg').textContent = 'Listening to it…';
+        const r = await api(`/api/tasks/${t.id}/oefenen/speak`, { method: 'POST', raw: blob, headers: { 'Content-Type': blob.type, 'X-Ext': blob.type.includes('ogg') ? 'ogg' : 'webm' } });
+        if (r.speech_failed) { $('#orecmsg').innerHTML = `<span class="err">${esc(r.message)}</span> Press “Didn't work” to get a different exercise.`; return; }
+        lastResult = r.result; unitResult = r.unit_result || null; set(r); render();
+      });
+      rec.start(); $('#orec').textContent = '■ Stop'; $('#orecmsg').textContent = 'Recording…';
+    };
+  }
+
+  $('#pg-prev').onclick = () => st.unit && showPage(st.unit, (shownPage || 1) - 1);
+  $('#pg-next').onclick = () => st.unit && showPage(st.unit, (shownPage || 1) + 1);
+  $('#ofocus-go').onclick = (e) => guard(async () => { const r = await post(`/api/tasks/${t.id}/oefenen/next`, { focus: $('#ofocus').value }); set(r); unitResult = null; lastResult = null; render(); }, e.target);
+  $('#oit-go').onclick = (e) => guard(async () => {
+    const units = [...$('#oit-units').selectedOptions].map((o) => o.value);
+    const pages = [+$('#oit-from').value, +$('#oit-to').value || +$('#oit-from').value].filter(Boolean);
+    await post(`/api/tasks/${t.id}/oefenen/italki`, { units, pages, note: $('#oit-note').value });
+    toast('Counted with your italki lesson. The book stays where it was.'); await loadState(); closePanel();
+  }, e.target);
+  if (st.unit || st.resume_choice) render(); else render();
+  beat(true);
 }
 
 function answerTemplate(items) {
@@ -627,7 +858,8 @@ async function viewPlan(selected) {
   const week = S.state.week;
   const day = selected && week.some((w) => w.day === selected) ? selected : (S.planDay && week.some((w) => w.day === S.planDay) ? S.planDay : week[0].day);
   S.planDay = day;
-  const [D, sess] = await Promise.all([api(`/api/day/${day}`), api('/api/sessions')]);
+  const [D, sess, oef] = await Promise.all([api(`/api/day/${day}`), api('/api/sessions'), api('/api/oefenen').catch(() => ({ units: [] }))]);
+  const oefUnits = (oef.units || []).filter((u) => !['partner', 'website'].includes(u.mode));
   const P = S.state.pto;
   const over = D.planned_minutes - D.budget;
   const caps = D.caps || {};
@@ -641,7 +873,9 @@ async function viewPlan(selected) {
     const p = t.params || {};
     return `<div class="plan-row" style="${catVar(t.category)}">
       <div><div class="name">${isSession ? '📅 ' : ''}${mystery ? '❓ Mystery task' : esc(t.name)}${isSession && t.time ? ` <span class="muted" style="font-weight:500">${esc(t.time)}</span>` : ''}</div>
-        <div class="muted" style="font-size:.85rem">${mystery ? 'Hidden until you start it' : isSession ? `Session${p.place ? ' · ' + esc(p.place) : ''}` : esc(CAT_LABEL[t.category]) + ' · ' + esc(kindSummary(t))} · ~${fmtMin(t.est_min)}${t.source === 'core' ? ' · core' : ''}${!t.counts ? ' · not required (free day)' : ''}</div></div>
+        <div class="muted" style="font-size:.85rem">${mystery ? 'Hidden until you start it' : isSession ? `Session${p.place ? ' · ' + esc(p.place) : ''}` : esc(CAT_LABEL[t.category]) + ' · ' + esc(kindSummary(t))} · ~${fmtMin(t.est_min)}${t.source === 'core' ? ' · core' : ''}${!t.counts ? ' · not required (free day)' : ''}</div>
+      ${t.kind === 'textbook' && oefUnits.length && D.editable ? `<div class="row" style="margin-top:4px"><label class="small muted" for="pf-${t.id}">Focus</label>
+        <select class="small" id="pf-${t.id}" data-pfocus="${t.id}"><option value="">Where the book is</option>${oefUnits.map((u) => `<option value="${esc(u.id)}" ${p.focus_unit === u.id ? 'selected' : ''}>${esc(`H${u.chapter} · ${u.section} ${u.title}`)}</option>`).join('')}</select></div>` : ''}</div>
       <div class="tools">
         ${isSession ? `<button class="small ghost" data-skip="${t.event_id}" title="Not happening this time">Skip this one</button>` : `
         ${!mystery && t.source !== 'core' ? `<button class="small ghost" data-swap="${t.id}" title="Swap for another random activity">↻ Swap</button>` : ''}
@@ -712,6 +946,7 @@ async function viewPlan(selected) {
     </div>`;
   const again = () => viewPlan(day);
   $$('[data-day]').forEach((b) => (b.onclick = () => viewPlan(b.dataset.day)));
+  $$('[data-pfocus]').forEach((sel) => (sel.onchange = () => guard(async () => { await post(`/api/tasks/${sel.dataset.pfocus}/focus`, { unit_id: sel.value || null }); toast(sel.value ? 'That day starts at this exercise.' : 'That day follows the book.'); })));
   $$('[data-swap]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.swap}/swap`); again(); }, b)));
   $$('[data-myst]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.myst}/mystify`); again(); }, b)));
   $$('[data-rm]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/tasks/${b.dataset.rm}/remove`); again(); }, b)));
@@ -917,12 +1152,63 @@ async function editActivity(a) {
 
 // ------------------------------------------------------------------ TEXTBOOK tab
 
+const STATUS_LABEL = { open: '', done: '✓', italki: '✓ italki', unsupported: 'not possible', retry: 'retry' };
+
+async function oefenenCard() {
+  const ov = await api('/api/oefenen');
+  const box = $('#oef-card');
+  if (!box) return;
+  const us = ov.units || [];
+  const chapters = [...new Set(us.map((u) => u.chapter))];
+  const closed = (u) => ['done', 'italki', 'unsupported'].includes(u.status);
+  const focus = ov.focus && ov.focus.unit_id;
+  box.innerHTML = `
+    <div class="card">
+      <div class="spread"><h2 style="margin:0">Oefenen: the book, one question at a time</h2>
+        ${us.length ? `<span class="muted">${us.filter((u) => ['done', 'italki'].includes(u.status)).length} of ${us.filter((u) => !['partner', 'website'].includes(u.mode)).length} exercises done</span>` : ''}</div>
+      ${us.length ? `
+        <p class="muted">Textbook tasks serve these in order${focus ? `, starting from your focus <b>${esc((us.find((u) => u.id === focus) || {}).title || focus)}</b> <button class="small ghost" id="oef-unfocus">Back to the full book</button>` : ''}. Exercises marked 👥 need a partner (use them with your italki teacher), 🌐 are on the book's website, 🎧 need the book's audio.</p>
+        ${chapters.map((c) => {
+          const cu = us.filter((u) => u.chapter === c);
+          const done = cu.filter((u) => ['done', 'italki'].includes(u.status)).length;
+          return `<details class="setrow" ${cu.some((u) => u.id === ov.next) ? 'open' : ''}>
+            <summary><b>Hoofdstuk ${c}${cu[0].chapter_title ? ' · ' + esc(cu[0].chapter_title) : ''}</b> <small>${done}/${cu.filter((u) => !['partner', 'website'].includes(u.mode)).length} done</small></summary>
+            <table class="oef-table">${cu.map((u) => `<tr class="${closed(u) ? 'done' : ''}${u.id === ov.next ? ' next' : ''}">
+              <td>${esc(u.section)}</td><td>${u.mode === 'partner' ? '👥 ' : u.mode === 'website' ? '🌐 ' : ''}${u.audio ? '🎧 ' : ''}${esc(u.title)} <small class="muted">p. ${esc(u.pages.join('–'))}${u.read.length ? ' · rules ' + u.read.map(pagesLabel).join(', ') : ''}</small></td>
+              <td>${esc(STATUS_LABEL[u.status] ?? u.status)}${u.total ? ` <small>${u.correct}/${u.total}</small>` : ''}${u.seconds ? ` <small class="muted">${Math.round(u.seconds / 60)} min</small>` : ''}</td>
+              <td class="row" style="justify-content:flex-end">${!['partner', 'website'].includes(u.mode) ? `<button class="small ghost" data-focus="${esc(u.id)}">Focus here</button>` : ''}
+                ${u.status === 'open' || u.status === 'retry' ? `<button class="small ghost" data-unit="${esc(u.id)}" data-st="unsupported">Not possible</button>` : `<button class="small ghost" data-unit="${esc(u.id)}" data-st="open">Put back</button>`}
+                ${u.audio ? `<label class="small ghost btn" title="${u.has_audio ? 'Replace' : 'Add'} the audio">${u.has_audio ? '🎧 ✓' : '+ audio'}<input type="file" accept="audio/*" data-audio="${esc(u.id)}" hidden></label>` : ''}</td></tr>`).join('')}</table>
+          </details>`;
+        }).join('')}` : '<p class="muted">No exercise bank yet. Import the exercise file built from your textbook to work through it one question at a time, checked against the answer key.</p>'}
+      <details style="margin-top:12px" ${us.length ? '' : 'open'}><summary>Import an exercise bank</summary>
+        <p class="hint">A <code>.json</code> file made from your own textbook. It stays on this computer. Progress on exercises with the same id is kept when you import a newer version.</p>
+        <input type="file" accept=".json,application/json" id="oef-file"> <button class="small" id="oef-import">Import</button>
+      </details>
+      ${ov.speech ? `<p class="hint">Speaking exercises: ${ov.speech.installed ? 'checked on this computer with Whisper ✓' : 'install speech checking with <code>sudo poortwachter-whisper-setup</code> (about 1 GB, runs on this computer only).'}</p>` : ''}
+    </div>`;
+  if ($('#oef-unfocus')) $('#oef-unfocus').onclick = (e) => guard(async () => { await post('/api/oefenen/focus', { unit_id: null }); oefenenCard(); }, e.target);
+  $$('[data-focus]').forEach((b) => (b.onclick = () => guard(async () => { await post('/api/oefenen/focus', { unit_id: b.dataset.focus }); toast('Textbook tasks start here now. Your place in the book is kept.'); oefenenCard(); }, b)));
+  $$('[data-unit]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/oefenen/units/${encodeURIComponent(b.dataset.unit)}/status`, { status: b.dataset.st }); oefenenCard(); }, b)));
+  $$('[data-audio]').forEach((inp) => (inp.onchange = () => guard(async () => {
+    const f = inp.files[0]; if (!f) return;
+    await api(`/api/oefenen/units/${encodeURIComponent(inp.dataset.audio)}/audio`, { method: 'POST', raw: f, headers: { 'X-Ext': f.name.split('.').pop() || 'mp3' } });
+    toast('Audio added.'); oefenenCard();
+  })));
+  $('#oef-import').onclick = (e) => guard(async () => {
+    const f = $('#oef-file').files[0]; if (!f) throw new Error('Choose the .json file first.');
+    const r = await post('/api/oefenen/import', { data: await f.text() });
+    toast(`Imported ${r.units} exercises (${r.questions} questions, ${r.auto} checked by the key).`); oefenenCard();
+  }, e.target);
+}
+
 async function viewTextbook() {
   await loadBooks();
   const { books, active } = S.books;
   const cap = ((await loadSettings()).category_caps || {}).textbook;
   $('#view').innerHTML = `
     <div class="section-title"><h1>Textbook</h1></div>
+    <div id="oef-card"></div>
     <div class="grid2">
       <div>
         ${books.map((b) => {
@@ -971,6 +1257,7 @@ async function viewTextbook() {
         <div class="card"><h2>Recent grading</h2><div id="subs" class="muted">Laden…</div></div>
       </div>
     </div>`;
+  if (active) oefenenCard();
   const findBook = (id) => books.find((x) => x.id === +id);
   $$('[data-act]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/textbooks/${b.dataset.act}/activate`); viewTextbook(); }, b)));
   $$('[data-saveoff]').forEach((b) => (b.onclick = () => guard(async () => { await post(`/api/textbooks/${b.dataset.saveoff}/offset`, { offset: +$(`[data-off="${b.dataset.saveoff}"]`).value }); toast('Offset saved.'); }, b)));
@@ -1043,6 +1330,18 @@ async function viewSettings() {
     <div class="section-title"><h1>Settings</h1></div>
     <div class="grid2">
       <div>
+        <div class="card">
+          <h2>Study time</h2>
+          <label for="tb-min">Textbook minutes per weekday</label>
+          <div class="row"><input type="number" id="tb-min" min="20" max="180" step="5" value="${s.textbook_minutes}" style="max-width:110px"><span class="muted">at least 20</span></div>
+          <label class="inline" style="margin-top:10px"><input type="checkbox" id="tb-hard" ${s.textbook_hardcore ? 'checked' : ''}> Hardcore: an exercise only counts at 70% or more (below that it comes back later)</label>
+          <label class="inline" style="margin-top:10px"><input type="checkbox" id="ramp-on" ${(s.ramp || {}).enabled ? 'checked' : ''}> Raise weekday study time: +5 minutes for every completed weekday after 7 in a row, up to 120 minutes (weekends stay at 45)</label>
+          ${(s.ramp || {}).enabled ? `<p class="hint">Now: +${(s.ramp_state || {}).bonus || 0} min on weekdays · ${(s.ramp_state || {}).streak || 0} weekdays in a row. A missed weekday restarts the count; the minutes you reached stay.</p>` : ''}
+          <div class="row" style="margin-top:10px"><button id="st-save">Save</button></div>
+          <hr>
+          <p class="muted">Recommended plan: every weekday the textbook and Boekenwurm reading; Anki as the daily review, except a set of 30 Boekenwurm flashcards on Wednesday and Saturday; the Boekenwurm diary every other day.</p>
+          <button class="ghost small" id="plan-rec">${s.plan_version === 4 ? 'Reset to the recommended plan' : 'Use the recommended plan'}</button>
+        </div>
         <div class="card">
           <h2>Claude (textbook grading)</h2>
           <p class="muted">Uses your own Anthropic API key. It's stored in Poortwachter's root-only folder and never sent to the browser.</p>
@@ -1140,6 +1439,14 @@ async function viewSettings() {
   $('#a-pick').onchange = () => { const v = $('#a-pick').value; $('#a-path').hidden = v !== '__custom'; if (v !== '__custom') $('#a-path').value = v; };
   $('#a-save').onclick = (e) => guard(async () => { await save({ anki_collection: $('#a-path').value.trim() }); viewSettings(); }, e.target);
   $('#a-test').onclick = (e) => guard(async () => { const d = await api('/api/anki/decks'); $('#a-out').innerHTML = d.length ? 'Decks: ' + d.map(esc).join(' · ') : 'No decks found.'; }, e.target);
+  $('#st-save').onclick = (e) => guard(async () => {
+    await post('/api/settings', { textbook_minutes: Math.max(20, +$('#tb-min').value || 20), textbook_hardcore: $('#tb-hard').checked, ramp: { enabled: $('#ramp-on').checked } });
+    toast('Saved. Days from tomorrow follow it.'); viewSettings();
+  }, e.target);
+  $('#plan-rec').onclick = (e) => guard(async () => {
+    if (!confirm('Replace your weekly plan with the recommended one? Days from tomorrow are redrawn.')) return;
+    await post('/api/plan/recommended'); toast('Recommended plan in place.'); viewSettings();
+  }, e.target);
   $('#sp-save').onclick = (e) => guard(() => save({ speaking_prompts: $('#sp').value.split('\n') }), e.target);
   if ($('#b-unpair')) $('#b-unpair').onclick = (e) => guard(async () => {
     if (!confirm('Unpair Poortwachter from Boekenwurm? Boekenwurm tasks will stop being checked until you pair again. (To cut it off completely, also Disconnect it in Boekenwurm.)')) return;

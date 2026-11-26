@@ -185,7 +185,8 @@ class RosterTests(Base):
         self.db.set_setting("schedule", sched)
         server.refresh_future()
         self.assertEqual(today_before, [t["id"] for t in r.tasks_for(r.today())])
-        self.assertLessEqual(sum(t["est_min"] for t in r.tasks_for(r.tomorrow())), 40)
+        # Core tasks (textbook, reading, review…) stay; with only 30 minutes nothing random is drawn on top.
+        self.assertEqual({t["source"] for t in r.tasks_for(r.tomorrow())}, {"core"})
 
 
 # ---------------------------------------------------------------- checks

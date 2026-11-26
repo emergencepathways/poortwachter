@@ -13,3 +13,6 @@ private/
 sets*.json
 *.zip
 .env
+*oefenen*.json
+*.mp3
+*.m4a

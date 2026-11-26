@@ -2,6 +2,21 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [4.0.0] - 2026-11-26
+
+**Oefenen: your textbook, one question at a time** (docs/OEFENEN.md).
+
+- Import an **exercise bank** made from your own textbook (it stays on this computer). Textbook tasks then serve its exercises one question at a time, in the book's order, with the page, the word list and links to the rules pages.
+- Answers are checked **against the answer key** right away (accents get a hint); open answers go to Claude with the key's model answer. After each exercise: score, percentage (70% passes) and every mistake.
+- **At least 20 minutes on weekdays** (Settings → Study time, never less). It counts once the time is reached, something was answered and the open exercise is finished. Twenty minutes with no answers cancels the session. Keep going as long as you like: twice the time is marked "took long", and doing another exercise after the task was done to twice the time earns **+1 hour** toward a free day.
+- **Hardcore mode**: only exercises at 70% or more count.
+- **Not possible** takes an exercise out; **Didn't work** skips it for today.
+- **italki** can replace the day's textbook task (choose the exercises or pages); the book stays where it was and the next session asks where to continue.
+- **Focus** on any chapter or exercise (Textbook tab, in the task, or for a coming day in Plan) without losing your place.
+- **Listening** exercises play the book's tracks (add them per exercise); **speaking** exercises are checked on this computer with Whisper (`sudo poortwachter-whisper-setup`).
+- **New default plan** (applied if you still had the old default; otherwise Settings → Study time → Use the recommended plan): weekdays the textbook and Boekenwurm reading; Anki as the daily review except a set of **30 Boekenwurm flashcards** on Wednesday and Saturday; the Boekenwurm diary every other day.
+- **Raise weekday study time** (Settings → Study time): +5 minutes for every completed weekday after 7 in a row, up to 120. Weekends stay at 45 and don't count.
+
 ## [3.2.1] - 2026-11-26
 
 - Fix: connecting to Boekenwurm failed with "connect.json answered 403". Cloudflare, which hosts Boekenwurm, refuses Python's default user agent; Poortwachter now names itself.

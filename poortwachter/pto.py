@@ -66,21 +66,26 @@ def process():
     last = db.get_setting("pto_processed_through") or db.get_setting("installed_day") or today
     d = dt.date.fromisoformat(last) + dt.timedelta(days=1)
     end = dt.date.fromisoformat(today)
+    ramp_changed = False
     while d < end:
         day = d.isoformat()
         if is_free(day):
             pass  # a free day pauses the chain
         elif _day_complete(day):
+            ramp_changed |= roster.settle_ramp(day, True)
             bal = balance()
             room = cap_days(day) * HOURS_PER_DAY - bal
             if room > 0:
                 _add(day, 1, "completed day")
         else:
+            ramp_changed |= roster.settle_ramp(day, False)
             partial = balance() % HOURS_PER_DAY
             if partial:
                 _add(day, -partial, "missed day: progress toward the next free day reset")
         db.set_setting("pto_processed_through", day)
         d += dt.timedelta(days=1)
+    if ramp_changed:
+        roster.refresh_future()
 
 
 def summary():

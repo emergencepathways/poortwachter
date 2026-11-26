@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Install local speech-to-text for Poortwachter's speaking exercises (Whisper via faster-whisper).
+# Everything runs on this computer: recordings are never uploaded. About 1 GB in /opt/poortwachter-whisper.
+#   sudo poortwachter-whisper-setup            (model: small; set MODEL=base for a faster, rougher one)
+set -euo pipefail
+[ "$(id -u)" = 0 ] || { echo "Run with sudo."; exit 1; }
+DIR=/opt/poortwachter-whisper
+MODEL="${MODEL:-small}"
+apt-get install -y python3-venv >/dev/null
+python3 -m venv "$DIR"
+"$DIR/bin/pip" install --upgrade pip >/dev/null
+"$DIR/bin/pip" install "faster-whisper>=1.0"
+mkdir -p "$DIR/models"
+cat > "$DIR/bin/poortwachter-transcribe" <<PY
+#!$DIR/bin/python
+import sys
+from faster_whisper import WhisperModel
+model = WhisperModel("$MODEL", device="cpu", compute_type="int8", download_root="$DIR/models")
+segments, _ = model.transcribe(sys.argv[1], language="nl", beam_size=5, vad_filter=True)
+print(" ".join(s.text.strip() for s in segments).strip())
+PY
+chmod 755 "$DIR/bin/poortwachter-transcribe"
+echo "Downloading the $MODEL model (first run)…"
+"$DIR/bin/python" - <<PY
+from faster_whisper import WhisperModel
+WhisperModel("$MODEL", device="cpu", compute_type="int8", download_root="$DIR/models")
+PY
+echo "Done. Speaking exercises in Poortwachter are now checked on this computer."

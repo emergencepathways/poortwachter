@@ -16,7 +16,8 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import __version__, actions, config, db, events, grammar, ical, pto, roster, textbook, verify_anki, verify_boekenwurm
+from . import (__version__, actions, config, db, events, grammar, ical, oefenen, pto, roster, speech, textbook,
+               verify_anki, verify_boekenwurm)
 from .config import CATEGORIES, KINDS
 
 MAX_JSON = 2 * 1024 * 1024
@@ -26,8 +27,10 @@ MAX_PDF = 600 * 1024 * 1024
 SETTABLE = {"schedule", "claude_api_key", "claude_model", "anki_collection", "bw_url", "bw_key",
             "bw_paragraphs_per_page", "speaking_prompts", "min_fill_minutes", "active_textbook",
             "category_caps", "event_minimum_activity", "plan_days_ahead", "bw_site", "languagetool",
-            "ical_feeds", "ical_rules"}
-PLAN_KEYS = {"schedule", "min_fill_minutes", "category_caps", "event_minimum_activity", "active_textbook"}
+            "ical_feeds", "ical_rules", "textbook_minutes", "textbook_hardcore", "ramp", "whisper",
+            "writing_every_other_day"}
+PLAN_KEYS = {"schedule", "min_fill_minutes", "category_caps", "event_minimum_activity", "active_textbook",
+             "textbook_minutes", "ramp", "writing_every_other_day"}
 
 
 class HTTPError(Exception):
@@ -69,7 +72,8 @@ def day_view(day):
         "editable": roster.today() < day <= roster.max_plan_day(),
         "tasks": tasks,
         "planned_minutes": sum(t["est_min"] for t in counting),
-        "budget": db.get_setting("schedule")[str(dt.date.fromisoformat(day).weekday())]["budget"],
+        "budget": db.get_setting("schedule")[str(dt.date.fromisoformat(day).weekday())]["budget"]
+        + roster.ramp_bonus(dt.date.fromisoformat(day).weekday()),
         "free": pto.free_source(day),
         "sessions": [t for t in tasks if t["source"] == "event"],
         "category_minutes": cat_minutes,
@@ -111,6 +115,14 @@ def settings_view():
         "languagetool": db.get_setting("languagetool"),
         "ical_feeds": db.get_setting("ical_feeds"),
         "ical_rules": db.get_setting("ical_rules"),
+        "textbook_minutes": db.get_setting("textbook_minutes"),
+        "textbook_hardcore": db.get_setting("textbook_hardcore"),
+        "ramp": db.get_setting("ramp"),
+        "ramp_state": db.get_setting("ramp_state"),
+        "whisper": db.get_setting("whisper"),
+        "speech": speech.status(),
+        "writing_every_other_day": db.get_setting("writing_every_other_day"),
+        "plan_version": db.get_setting("plan_version"),
     }
 
 
@@ -371,6 +383,118 @@ def api_tb_submit(h, m):
                                    b.get("page_from"), b.get("page_to"))
 
 
+# ---------------------------------------------------------------- textbook practice (oefenen)
+
+
+@route("GET", r"/api/tasks/(\d+)/oefenen")
+def api_oef_status(h, m):
+    return oefenen.status(int(m.group(1)))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/beat")
+def api_oef_beat(h, m):
+    return oefenen.status(int(m.group(1)), beat=True, running=bool(h.json().get("running", True)))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/next")
+def api_oef_next(h, m):
+    b = h.json()
+    return oefenen.next_question(int(m.group(1)), skip_unit=bool(b.get("skip")), focus_unit=b.get("focus"))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/answer")
+def api_oef_answer(h, m):
+    return oefenen.answer(int(m.group(1)), h.json().get("answer", ""))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/notpossible")
+def api_oef_notpossible(h, m):
+    return oefenen.not_possible(int(m.group(1)))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/didntwork")
+def api_oef_didntwork(h, m):
+    return oefenen.didnt_work(int(m.group(1)))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/resume")
+def api_oef_resume(h, m):
+    return oefenen.resume(int(m.group(1)), h.json().get("choice"))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/italki")
+def api_oef_italki(h, m):
+    b = h.json()
+    return oefenen.italki(int(m.group(1)), b.get("units") or [], b.get("pages") or [], b.get("note", ""))
+
+
+@route("POST", r"/api/tasks/(\d+)/oefenen/speak")
+def api_oef_speak(h, m):
+    data = h.body(MAX_RECORDING)
+    return oefenen.speak(int(m.group(1)), data, (h.headers.get("X-Ext") or "webm").strip("."))
+
+
+@route("POST", r"/api/tasks/(\d+)/focus")
+def api_task_focus(h, m):
+    """Plan a textbook task on a coming day to work on a chosen chapter or exercise."""
+    t = roster.task(int(m.group(1)))
+    if not t or t["kind"] != "textbook":
+        raise HTTPError(404, "No such textbook task.")
+    if t["day"] <= roster.today():
+        raise HTTPError(400, "Change today's focus inside the task.")
+    uid = h.json().get("unit_id") or None
+    if uid and not oefenen.unit(uid):
+        raise HTTPError(400, "No such exercise.")
+    p = dict(t["params"])
+    if uid:
+        p["focus_unit"] = uid
+    else:
+        p.pop("focus_unit", None)
+    db.connect().execute("UPDATE tasks SET params = ? WHERE id = ?", (json.dumps(p), t["id"]))
+    roster.mark_edited(t["day"])
+    return roster.public_task(roster.task(t["id"]))
+
+
+@route("GET", r"/api/oefenen")
+def api_oef_overview(h, m):
+    if not db.get_setting("active_textbook"):
+        return {"textbook_id": None, "units": []}
+    return oefenen.overview() | {"speech": speech.status()}
+
+
+@route("POST", r"/api/oefenen/import")
+def api_oef_import(h, m):
+    b = h.json()
+    r = oefenen.import_bank(b.get("textbook_id"), b.get("data"))
+    refresh_future()
+    return r
+
+
+@route("POST", r"/api/oefenen/units/([\w.-]+)/status")
+def api_oef_unit_status(h, m):
+    oefenen.set_status(m.group(1), h.json().get("status"))
+    return oefenen.overview()
+
+
+@route("POST", r"/api/oefenen/focus")
+def api_oef_focus(h, m):
+    oefenen.set_focus(h.json().get("unit_id") or None)
+    return oefenen.overview()
+
+
+@route("POST", r"/api/oefenen/units/([\w.-]+)/audio")
+def api_oef_audio(h, m):
+    data = h.body(MAX_RECORDING)
+    return oefenen.save_audio(m.group(1), data, (h.headers.get("X-Ext") or "mp3"))
+
+
+@route("POST", r"/api/plan/recommended")
+def api_plan_recommended(h, m):
+    db.apply_recommended_plan()
+    refresh_future()
+    return settings_view()
+
+
 # ---------------------------------------------------------------- library
 
 
@@ -462,6 +586,14 @@ def api_settings_save(h, m):
             value = int(value) if value else None
         if key in ("claude_api_key", "bw_key") and value == "":
             continue  # empty field = keep the stored secret
+        if key == "textbook_minutes":
+            value = max(oefenen.MIN_TARGET_MIN, min(int(value or 20), 180))  # never under 20 minutes
+        if key == "textbook_hardcore" or key == "whisper":
+            value = bool(value)
+        if key == "ramp":
+            value = {"enabled": bool((value or {}).get("enabled")), "step": 5, "after": 7, "max": 120}
+        if key == "writing_every_other_day":
+            value = [int(i) for i in (value or [])]
         if key == "speaking_prompts":
             value = [p.strip() for p in value if isinstance(p, str) and p.strip()] or db.SPEAKING_PROMPTS
         db.set_setting(key, value)
@@ -752,7 +884,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": e.message}, e.status)
         except (roster.EditError, actions.ActionError, textbook.TextbookError,
                 verify_boekenwurm.BWError, events.EventError, pto.PTOError, grammar.GrammarError,
-                ical.ICalError, ValueError) as e:
+                ical.ICalError, oefenen.OefenError, ValueError) as e:
             self.send_json({"error": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
             db.log("error", traceback.format_exc()[-1500:])
@@ -771,6 +903,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_file(textbook.render_page(int(mp.group(1)), int(mp.group(2))), "image/png")
             except textbook.TextbookError as e:
                 self.send_json({"error": str(e)}, 404)
+            return
+        ma = re.match(r"^/files/audio/([\w.-]+)$", path)
+        if ma:
+            bid = db.get_setting("active_textbook")
+            p = oefenen.audio_path(int(bid), ma.group(1)) if bid else None
+            if not p:
+                self.send_json({"error": "Not found."}, 404)
+                return
+            self.send_file(p)
             return
         if path == "/calendar.ics":
             data = ical.plan_ics().encode()

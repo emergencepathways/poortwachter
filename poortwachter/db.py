@@ -138,6 +138,35 @@ CREATE TABLE IF NOT EXISTS pto_ledger (
     reason TEXT NOT NULL,
     ts     REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS bank_units (       -- the private exercise bank, built from the owner's textbook
+    textbook_id INTEGER NOT NULL,
+    id          TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    data        TEXT NOT NULL,
+    PRIMARY KEY (textbook_id, id)
+);
+CREATE TABLE IF NOT EXISTS unit_state (        -- where each exercise stands: done | retry | italki | unsupported
+    textbook_id INTEGER NOT NULL,
+    unit_id     TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    correct     INTEGER,
+    total       INTEGER,
+    seconds     REAL NOT NULL DEFAULT 0,
+    ts          REAL NOT NULL,
+    PRIMARY KEY (textbook_id, unit_id)
+);
+CREATE TABLE IF NOT EXISTS unit_attempts (
+    id          INTEGER PRIMARY KEY,
+    textbook_id INTEGER NOT NULL,
+    unit_id     TEXT NOT NULL,
+    task_id     INTEGER,
+    day         TEXT NOT NULL,
+    correct     INTEGER NOT NULL,
+    total       INTEGER NOT NULL,
+    seconds     REAL NOT NULL,
+    results     TEXT NOT NULL,
+    ts          REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS recordings (
     id      INTEGER PRIMARY KEY,
     task_id INTEGER,
@@ -185,9 +214,9 @@ DEFAULT_ACTIVITIES = [
     ("Boekenwurm — diary entry", "writing", "bw_diary",
      {}, 15, 0.8, 1,
      "Write a diary entry in Boekenwurm (fine on your phone). Only the fact that you wrote is shared, never the text."),
-    ("Boekenwurm — flashcards", "flashcards", "bw_cards",
-     {"cards": 20}, 10, 1.0, 1,
-     "Review your Boekenwurm study words."),
+    ("Boekenwurm — flashcards (a set of 30)", "flashcards", "bw_cards",
+     {"cards": 30}, 12, 0.6, 0,
+     "Review a full set of 30 Boekenwurm flashcards. Required 1–2 days a week; Anki is the daily review otherwise."),
     ("Dutch novel — 20 minutes + summary", "reading", "timer",
      {"minutes": 20, "note_words": 30,
       "note_prompt": "Vat samen wat je hebt gelezen (minimaal 30 woorden)."}, 25, 1.0, 1,
@@ -196,9 +225,10 @@ DEFAULT_ACTIVITIES = [
      {"minutes": 15, "note_words": 20,
       "note_prompt": "Welk nieuwsbericht vond je interessant? Waarom? (minimaal 20 woorden)"}, 15, 0.8, 1,
      "Read NOS, NU.nl or the Jeugdjournaal in Dutch."),
-    ("Textbook — next exercise", "textbook", "textbook",
-     {"mode": "queue"}, 25, 1.2, 1,
-     "Answer the next exercise from your textbook. Claude grades it."),
+    ("Textbook — oefenen", "textbook", "textbook",
+     {"mode": "queue"}, 20, 1.2, 0,
+     "Work through your textbook in order, one question at a time, for at least 20 minutes. Answers are checked "
+     "against the book's answer key."),
     ("Speaking — answer a prompt", "speaking", "recording",
      {"min_seconds": 120, "prompts": "speaking"}, 10, 1.0, 1,
      "Record yourself answering a random Dutch prompt for at least 2 minutes."),
@@ -223,6 +253,7 @@ DEFAULT_ACTIVITIES = [
 
 
 def _default_schedule():
+    """Before activities exist: Anki every day. init() replaces it with recommended_plan()."""
     schedule = {}
     for wd in range(7):  # 0 = Monday
         weekend = wd >= 5
@@ -232,6 +263,25 @@ def _default_schedule():
             "core": [1],  # Anki reviews every day
         }
     return schedule
+
+
+def recommended_plan(conn=None):
+    """The owner's plan (v4): every weekday the textbook (20+ min) and Boekenwurm reading; the daily review is Anki,
+    except Boekenwurm flashcards (a set of 30) on Wednesday and Saturday; writing (the Boekenwurm diary) every other
+    day; weekends 45 minutes. Returns (schedule, every-other-day ids)."""
+    conn = conn or connect()
+
+    def first(kind):
+        r = conn.execute("SELECT id FROM activities WHERE kind = ? AND enabled = 1 ORDER BY id LIMIT 1",
+                         (kind,)).fetchone()
+        return r["id"] if r else None
+    anki, cards, book, reading, diary = (first(k) for k in ("anki", "bw_cards", "textbook", "bw_reading", "bw_diary"))
+    schedule = {}
+    for wd in range(7):
+        review = cards if wd in (2, 5) and cards else anki
+        core = [review] + ([book] if wd < 5 else []) + [reading]
+        schedule[str(wd)] = {"budget": 45 if wd >= 5 else 90, "mystery": 0.0, "core": [i for i in core if i]}
+    return schedule, [diary] if diary else []
 
 
 DEFAULT_SETTINGS = {
@@ -260,6 +310,16 @@ DEFAULT_SETTINGS = {
     "ical_rules": [{"keyword": "italki", "kind": "italki"}, {"keyword": "taalgroep", "kind": "library"},
                    {"keyword": "taalcafé", "kind": "other"}, {"keyword": "bibliotheek", "kind": "library"}],
     "pto_processed_through": None,
+    # Textbook (oefenen): minutes per weekday session (never under 20), hardcore = only 70%+ counts.
+    "textbook_minutes": 20,
+    "textbook_hardcore": False,
+    "tb_focus": {},                  # {"textbook_id", "unit_id"}: work from this exercise on
+    "tb_resume": {},                 # after italki work: ask where to continue
+    # Raise weekday study time: +5 min per completed weekday after 7 in a row, up to 120 (weekends stay).
+    "ramp": {"enabled": False, "step": 5, "after": 7, "max": 120},
+    "ramp_state": {"streak": 0, "bonus": 0, "through": None},
+    "writing_every_other_day": [],   # activity ids required on alternate days
+    "whisper": True,                 # check speaking exercises with the local Whisper (if installed)
 }
 
 
@@ -289,6 +349,7 @@ def init():
                     " description, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                     (name, cat, kind, json.dumps(params), est, weight, pool, desc, time.time()))
         _migrate(conn)
+        _migrate_plan(conn)
         if get_setting("installed_day") is None:
             _mark_install_day(conn)
         for d in (config.TEXTBOOK_DIR, config.RECORDING_DIR):
@@ -299,6 +360,31 @@ def init():
             config.DB_PATH.chmod(0o600)
         except OSError:
             pass
+
+
+def _migrate_plan(conn):
+    """v4 defaults: a new install, or one still on the old default plan (Anki only, 90/45), gets the recommended
+    plan. Plans the owner changed are left alone (Settings has a button to switch)."""
+    if get_setting("plan_version"):
+        return
+    sched = get_setting("schedule") or {}
+    anki = conn.execute("SELECT id FROM activities WHERE kind = 'anki' ORDER BY id LIMIT 1").fetchone()
+    untouched = anki and all(
+        (sched.get(str(wd)) or {}).get("core") == [anki["id"]]
+        and (sched.get(str(wd)) or {}).get("budget") == (45 if wd >= 5 else 90) for wd in range(7))
+    for r in conn.execute("SELECT id, params, est_min FROM activities WHERE kind = 'bw_cards'").fetchall():
+        p = json.loads(r["params"])
+        if int(p.get("cards") or 0) < 30:
+            p["cards"] = 30
+            conn.execute("UPDATE activities SET params = ?, est_min = MAX(est_min, 12), name = "
+                         "'Boekenwurm — flashcards (a set of 30)' WHERE id = ?", (json.dumps(p), r["id"]))
+    conn.execute("UPDATE activities SET name = 'Textbook — oefenen', est_min = 20 "
+                 "WHERE kind = 'textbook' AND name = 'Textbook — next exercise'")
+    if untouched:
+        conn.execute("UPDATE activities SET in_pool = 0 WHERE kind IN ('textbook', 'bw_cards')")
+        apply_recommended_plan(conn)
+    else:
+        set_setting("plan_version", 3)
 
 
 def _columns(conn, table):
@@ -346,6 +432,14 @@ def _migrate(conn):
             p.pop("prompt")
             p["prompt_set"] = "diary"
             conn.execute("UPDATE activities SET params = ? WHERE id = ?", (json.dumps(p), r["id"]))
+
+
+def apply_recommended_plan(conn=None):
+    conn = conn or connect()
+    schedule, alternate = recommended_plan(conn)
+    set_setting("schedule", schedule)
+    set_setting("writing_every_other_day", alternate)
+    set_setting("plan_version", 4)
 
 
 def _mark_install_day(conn):

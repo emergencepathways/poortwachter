@@ -117,6 +117,15 @@ You're the admin on your own machine, so this is friction, not a prison. Stoppin
 
 The full install and management guide is the "Poortwachter: install & management guide" doc.
 
+## What's new in v4
+
+- **Oefenen**: import an exercise bank made from your textbook (Textbook tab) and textbook tasks become one question
+  at a time, in the book's order, checked against the answer key, at least 20 minutes on weekdays. See
+  [docs/OEFENEN.md](docs/OEFENEN.md) for the rules (cancelled sessions, "took long", bonus hour, hardcore, italki,
+  focus) and the bank format. The bank stays on your computer.
+- **Speaking exercises checked on your computer**: `sudo poortwachter-whisper-setup` (about 1 GB).
+- **New default plan** and an optional **weekday ramp** to 120 minutes (Settings → Study time).
+
 ## What's new in v3
 
 - **Connect to Boekenwurm** (Settings → Boekenwurm → **Connect to Boekenwurm**, or in Boekenwurm → Account →

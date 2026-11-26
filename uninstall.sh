@@ -12,7 +12,7 @@ USER_NAME="$(sed -n 's/^user *= *//p' /etc/poortwachter.conf 2>/dev/null || true
 systemctl disable --now poortwachter 2>/dev/null || true
 rm -f /etc/systemd/system/poortwachter.service
 systemctl daemon-reload
-rm -rf /opt/poortwachter /usr/local/bin/poortwachter /usr/local/bin/poortwachter-steam /usr/local/bin/poortwachter-update /usr/local/bin/poortwachter-window /etc/poortwachter.conf
+rm -rf /opt/poortwachter /opt/poortwachter-whisper /usr/local/bin/poortwachter /usr/local/bin/poortwachter-steam /usr/local/bin/poortwachter-update /usr/local/bin/poortwachter-window /usr/local/bin/poortwachter-whisper-setup /etc/poortwachter.conf
 if [ -n "$USER_NAME" ]; then
   H="$(getent passwd "$USER_NAME" | cut -d: -f6)"
   rm -f "$H/.local/share/applications/poortwachter.desktop" "$H/.config/autostart/poortwachter.desktop"
