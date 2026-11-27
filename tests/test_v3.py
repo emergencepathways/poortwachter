@@ -444,7 +444,7 @@ class ICalTests(Base):
         self.assertEqual(ics.count("BEGIN:VEVENT"), 8)
         self.assertIn("DTSTART;VALUE=DATE:20261125", ics)
         self.assertIn("Free day", ics)
-        self.assertIn("Mystery task", ics)
+        self.assertIn("Mystery task", ics.replace("\r\n ", ""))  # lines are folded at 75 octets
         hidden = r.task(tid)["name"]
         day27 = ics.split("UID:poortwachter-day-2026-11-27@poortwachter")[1].split("END:VEVENT")[0]
         unfolded = day27.replace("\r\n ", "")
