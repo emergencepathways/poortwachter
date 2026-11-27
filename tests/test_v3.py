@@ -131,7 +131,7 @@ class BoekenwurmPairingTests(Base):
         # 3 pages at level < 5, 12 min at level < 20: not yet
         r = bw.check_reading({"pages": 5, "minutes": 20, "at_level": True}, day)
         self.assertFalse(r["ok"], r)
-        self.assertIn("below your level don't count", r["message"])
+        self.assertIn("don't count: below your level", r["message"])
         # Counting everything: 9 pages >= 5
         bw._cache.clear()
         self.assertTrue(bw.check_reading({"pages": 5, "minutes": 20, "at_level": False}, day)["ok"])

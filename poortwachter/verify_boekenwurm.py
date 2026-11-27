@@ -416,7 +416,11 @@ def check_reading(params, day):
             parts.append(f"{minutes:g}/{t['minutes']} active min")
         msg = " or ".join(parts) + (" at or above your level" if t["at_level"] else "") + " today"
         if t["at_level"] and int(s.get("pages") or 0) > pages:
-            msg += f" ({int(s.get('pages') or 0) - pages} more pages below your level don't count)"
+            msg += (f" ({int(s.get('pages') or 0) - pages} more pages don't count: below your level, or in a book "
+                    "without a level, or read before Poortwachter was connected)")
+        elif not ok and not int(s.get("pages") or 0) and not float(s.get("active_minutes") or 0):
+            msg += (". Boekenwurm has no reading for today yet: finish or leave the reading session on your phone "
+                    "so it syncs")
         return {"ok": bool(ok), "value": pages, "target": t["pages"], "message": msg, "summary": s}
     # Fallback: the older email sign-in (no active time or levels).
     try:

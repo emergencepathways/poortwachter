@@ -2,6 +2,11 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [4.2.1] - 2026-11-27
+
+- Clearer Boekenwurm reading messages: why pages don't count (below your level, a book without a level, or read before Poortwachter was connected), and a reminder to finish or leave the reading session when nothing has synced yet.
+- Pages read in Boekenwurm counted 0: that was a bug in Boekenwurm (its migration 0016 fixes it), not in Poortwachter.
+
 ## [4.2.0] - 2026-11-27
 
 - **When Claude isn't working** (no credit, a wrong key, no permission), Poortwachter notices and says so in Settings → Claude, with a **Test the key** button. Until it works again:
