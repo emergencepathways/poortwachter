@@ -184,8 +184,10 @@ def overview(book_id=None):
                                       "read", "mode", "audio", "minutes", "skill")}
                    | {"questions": len(u["questions"]), "status": s.get("status") or "open",
                       "correct": s.get("correct"), "total": s.get("total"), "seconds": round(s.get("seconds") or 0),
-                      "has_audio": audio_path(bid, u["id"]) is not None})
+                      "has_audio": audio_path(bid, u["id"]) is not None, "needs_claude": needs_claude(u)})
+    from . import textbook
     return {"textbook_id": bid, "units": out, "focus": db.get_setting("tb_focus") or {},
+            "claude": textbook.claude_status(),
             "next": (_next_unit(bid, set()) or {}).get("id")}
 
 
@@ -211,9 +213,19 @@ def set_focus(unit_id, book_id=None):
     db.set_setting("tb_focus", {"textbook_id": bid, "unit_id": unit_id} if unit_id else {})
 
 
-def _serveable(u, st, skipped):
+def needs_claude(u):
+    """Nothing in it can be checked against the key: every answer needs Claude."""
+    return not any(q["answer"] and q["type"] in ("choice", "text", "sentence", "speak") for q in u["questions"])
+
+
+def _serveable(u, st, skipped, claude=None):
     s = (st.get(u["id"]) or {}).get("status")
-    return u["mode"] not in NOT_SERVED and s not in CLOSED and u["id"] not in skipped
+    if u["mode"] in NOT_SERVED or s in CLOSED or u["id"] in skipped:
+        return False
+    if needs_claude(u):  # while the Claude key or its credit doesn't work, these wait
+        from . import textbook
+        return textbook.claude_ok() if claude is None else claude
+    return True
 
 
 def _next_unit(bid, skipped, focus=None):
@@ -692,10 +704,9 @@ Reply with JSON only:
 
 def grade_open(u, results):
     from . import textbook
-    key = db.get_setting("claude_api_key")
-    if not key:
-        raise OefenError("Add your Claude API key in Settings to have open answers checked. "
-                         "Until then, compare with the key shown.")
+    if not textbook.claude_ok():
+        raise OefenError("Claude can't check this right now (" + (textbook.claude_status()["reason"] or "no key")
+                         + "). Compare with the key shown; it isn't scored.")
     rows = []
     for r in results:
         if r["verdict"] not in ("review", "open"):
@@ -713,18 +724,10 @@ def grade_open(u, results):
             title=f"{u['section']} {u['title']}", instruction=u["instruction"],
             context=("Context: " + u["context"]) if u.get("context") else "", rows="\n".join(rows))}],
     }
-    import urllib.error
-    import urllib.request
-    req = urllib.request.Request(textbook.API_URL, data=json.dumps(body).encode(), method="POST", headers={
-        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        raise OefenError(f"Claude API error {e.code}.") from None
-    except urllib.error.URLError as e:
-        raise OefenError(f"Couldn't reach the Claude API: {e.reason}") from None
-    text = "".join(c.get("text", "") for c in data.get("content", []) if c.get("type") == "text")
+        text = textbook.claude_call(body, timeout=120)
+    except textbook.TextbookError as e:
+        raise OefenError(str(e)) from None
     try:
         return textbook.parse_result(text)
     except textbook.TextbookError as e:

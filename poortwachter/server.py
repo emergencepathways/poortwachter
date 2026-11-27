@@ -62,6 +62,10 @@ def refresh_future():
 def day_view(day):
     roster.ensure_roster(day)
     tasks = [roster.public_task(t) for t in roster.tasks_for(day)]
+    if day == roster.today():
+        for t in tasks:
+            if t["kind"] == "textbook" and t["status"] != "done":
+                t["blocked"] = actions.blocked(t["id"])
     counting = [t for t in tasks if t["counts"]]
     cat_minutes = {}
     for t in counting:
@@ -97,6 +101,7 @@ def settings_view():
         "schedule": db.get_setting("schedule"),
         "claude_model": db.get_setting("claude_model"),
         "claude_key_set": bool(db.get_setting("claude_api_key")),
+        "claude_status": textbook.claude_status(),
         "anki_collection": db.get_setting("anki_collection") or "",
         "anki_detected": verify_anki.find_collections(),
         "anki_in_use": verify_anki.collection_path(),
@@ -489,6 +494,33 @@ def api_oef_audio(h, m):
     return oefenen.save_audio(m.group(1), data, (h.headers.get("X-Ext") or "mp3"))
 
 
+@route("GET", r"/api/claude/status")
+def api_claude_status(h, m):
+    return textbook.claude_status()
+
+
+@route("POST", r"/api/claude/test")
+def api_claude_test(h, m):
+    try:
+        return textbook.test_key()
+    except textbook.TextbookError as e:
+        return textbook.claude_status() | {"error": str(e)}
+
+
+@route("GET", r"/api/tasks/(\d+)/blocked")
+def api_task_blocked(h, m):
+    tid = int(m.group(1))
+    reason = actions.blocked(tid)
+    return {"blocked": reason, "options": [{"id": a["id"], "name": a["name"], "est_min": a["est_min"],
+                                            "category": a["category"]} for a in actions.replacements(tid)]
+            if reason else []}
+
+
+@route("POST", r"/api/tasks/(\d+)/replace")
+def api_task_replace(h, m):
+    return actions.replace_blocked(int(m.group(1)), h.json().get("activity_id"))
+
+
 @route("POST", r"/api/plan/recommended")
 def api_plan_recommended(h, m):
     db.apply_recommended_plan()
@@ -587,6 +619,8 @@ def api_settings_save(h, m):
             value = int(value) if value else None
         if key in ("claude_api_key", "bw_key") and value == "":
             continue  # empty field = keep the stored secret
+        if key == "claude_api_key":
+            db.set_setting("claude_status", {})  # a new key: try again
         if key == "textbook_minutes":
             value = max(oefenen.MIN_TARGET_MIN, min(int(value or 20), 180))  # never under 20 minutes
         if key == "textbook_hardcore" or key == "whisper":

@@ -392,3 +392,64 @@ class OfflineDayTests(Base):
         self.set_now(dt.datetime(2026, 11, 27, 10, 0))
         r.ensure_roster(r.today())
         self.assertEqual(self.pto.balance(), 24, "the 26th was missed: the partial hours went")
+
+
+class ClaudeDownTests(OefenBase):
+    def http_error(self, code, message):
+        import io
+        import urllib.error
+        body = json.dumps({"error": {"message": message}}).encode()
+        return urllib.error.HTTPError("https://x", code, "err", {}, io.BytesIO(body))
+
+    def test_credit_error_blocks_claude_work_until_the_key_works(self):
+        from poortwachter import textbook
+        importlib.reload(textbook)
+        self.db.set_setting("claude_api_key", "sk-test")
+        self.assertTrue(textbook.claude_ok())
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=self.http_error(400, "Your credit balance is too low to access the Anthropic API.")):
+            with self.assertRaises(textbook.TextbookError):
+                textbook.test_key()
+        st = textbook.claude_status()
+        self.assertFalse(st["ok"])
+        self.assertEqual(st["kind"], "credit")
+        # exercises that only Claude can check wait; the rest is still served
+        self.assertTrue(self.oef.needs_claude(self.oef.unit("h1-o4")) is False)  # it has a key answer
+        with mock.patch("urllib.request.urlopen",
+                        return_value=FakeResp(json.dumps({"content": [{"type": "text", "text": "ok"}]}).encode())):
+            textbook.test_key()
+        self.assertTrue(textbook.claude_ok())
+
+    def test_a_plain_bad_request_doesnt_block(self):
+        from poortwachter import textbook
+        importlib.reload(textbook)
+        self.db.set_setting("claude_api_key", "sk-test")
+        with mock.patch("urllib.request.urlopen", side_effect=self.http_error(400, "max_tokens: too large")):
+            with self.assertRaises(textbook.TextbookError):
+                textbook.test_key()
+        self.assertTrue(textbook.claude_ok())
+
+    def test_blocked_textbook_task_can_be_swapped_not_otherwise(self):
+        from poortwachter import textbook
+        importlib.reload(textbook)
+        self.db.connect().execute("DELETE FROM bank_units")  # the old way: whole pages graded by Claude
+        tid = self.task()
+        self.db.set_setting("claude_api_key", "sk-test")
+        with self.assertRaises(self.actions.ActionError):
+            self.actions.replace_blocked(tid)  # Claude works: no swapping
+        self.db.set_setting("claude_status", {"ok": False, "kind": "credit", "reason": "credit balance too low"})
+        self.assertIn("credit balance", self.actions.blocked(tid))
+        before = self.roster.task(tid)["est_min"]
+        opts = self.actions.replacements(tid)
+        self.assertTrue(opts and all(a["kind"] != "textbook" for a in opts))
+        new = self.actions.replace_blocked(tid, opts[0]["id"])
+        self.assertNotEqual(new["kind"], "textbook")
+        self.assertGreaterEqual(new["est_min"], before - 5)
+        self.assertEqual(self.roster.task(tid)["progress"]["replaced"], "Textbook — oefenen")
+
+    def test_bank_keeps_working_while_claude_is_down(self):
+        self.db.set_setting("claude_api_key", "sk-test")
+        self.db.set_setting("claude_status", {"ok": False, "kind": "credit", "reason": "credit balance too low"})
+        tid = self.task()
+        self.assertIsNone(self.actions.blocked(tid), "exercises checked by the key can still be done")
+        self.assertEqual(self.oef.next_question(tid)["unit"]["id"], "h1-o1")

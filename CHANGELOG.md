@@ -2,6 +2,13 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [4.2.0] - 2026-11-27
+
+- **When Claude isn't working** (no credit, a wrong key, no permission), Poortwachter notices and says so in Settings → Claude, with a **Test the key** button. Until it works again:
+  - exercises that only Claude can check wait (shown as "⏸ needs Claude"); everything the answer key can check still works;
+  - a textbook task that needs Claude shows **⚠ not possible right now**, and you can swap it for another task of about the same length, chosen or 🎲 at random. Swapping is only possible while the task really can't be done, so today never gets lighter.
+- Rate limits and outages don't count as "not working"; saving a new key tries again.
+
 ## [4.1.0] - 2026-11-27
 
 - **A day the computer stays off is paused**, like a free day: no hour earned, the hours toward your next free day aren't wiped, the streak and the weekday ramp pause, and nothing carries over from it. History shows it as ⏸. Settings → Study time → "A day the computer stays off" can count it as missed instead.

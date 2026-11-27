@@ -164,6 +164,7 @@ function taskCard(t, { planner = false } = {}) {
   if (t.source === 'event') chips.push(`<span class="chip">📅 session${t.time ? ' ' + esc(t.time) : ''}</span>`);
   if (t.source === 'core') chips.push('<span class="chip">core</span>');
   if (!t.counts) chips.push('<span class="chip bonus">bonus</span>');
+  if (t.blocked) chips.push('<span class="chip carry" title="' + esc(t.blocked) + '">⚠ not possible right now</span>');
   return `
     <button class="task ${t.status === 'done' ? 'done' : ''} ${mystery ? 'mystery' : ''}" style="${catVar(t.category)}" data-task="${t.id}" ${planner ? 'disabled' : ''}>
       <div class="name">${mystery ? '❓ Mystery task' : esc(t.name)}</div>
@@ -497,7 +498,25 @@ async function panelRecording(t) {
 async function hasBank() {
   try { return ((await api('/api/oefenen')).units || []).length > 0; } catch { return false; }
 }
+async function panelBlocked(t, reason, options) {
+  openPanel(`${panelHead(t)}
+    <div class="card"><p class="err"><b>Not possible right now.</b> ${esc(reason)}</p>
+      ${/credit|billing/i.test(reason) ? '<p>Add credit or fix the payment method in the Claude Console (platform.claude.com → Billing), then press <b>Test the key</b> in Settings → Claude.</p>' : /key/i.test(reason) ? '<p>Check the key in Settings → Claude.</p>' : ''}
+    </div>
+    <div class="card"><h2>Do something else today</h2>
+      <p class="muted">Swap this task for another one of about the same length. Today's list doesn't get shorter.</p>
+      <label for="rep-pick">Choose</label>
+      <div class="row"><select id="rep-pick" style="flex:1">${options.map((a) => `<option value="${a.id}">${esc(a.name)} · ~${fmtMin(a.est_min)}</option>`).join('')}</select><button id="rep-go">Swap</button></div>
+      <button class="ghost" id="rep-rand" style="margin-top:10px">🎲 Surprise me</button>
+    </div>`);
+  const swap = (id) => guard(async () => { const n = await post(`/api/tasks/${t.id}/replace`, { activity_id: id }); toast(`Swapped for: ${n.name}`); await loadState(); closePanel(true); openTask(n.id); });
+  $('#rep-go').onclick = () => swap(+$('#rep-pick').value);
+  $('#rep-rand').onclick = () => swap(null);
+}
+
 async function panelTextbook(t) {
+  const bl = await api(`/api/tasks/${t.id}/blocked`).catch(() => ({}));
+  if (bl.blocked) return panelBlocked(t, bl.blocked, bl.options || []);
   if (await hasBank()) return panelOefenen(t);
   const target = await api(`/api/tasks/${t.id}/textbook`);
   if (target.error) {
@@ -655,9 +674,10 @@ async function panelOefenen(t) {
       return;
     }
     if (!st.unit) {
-      body.innerHTML = st.empty ? '<div class="card">🎉 No exercises left in the book (or all are skipped for today). Choose one below, or add more to the bank.</div>'
+      body.innerHTML = st.empty ? `<div class="card">Nothing left to serve today: the book is done, the rest is skipped for today, or the exercises left need Claude while it isn't working. Choose one below${st.done ? '' : ', or swap this task'}.${st.done ? '' : '<div><button class="big" id="oswap" style="margin-top:10px">Do something else today</button></div>'}</div>`
         : `<div class="card"><p>${st.answered ? 'Ready for the next exercise.' : 'Questions come one at a time, in the book’s order, from where you left off.'}</p><button class="big warm" id="ostart">${st.answered ? 'Next exercise →' : '▶ Start'}</button></div>`;
       if ($('#ostart')) $('#ostart').onclick = (e) => guard(() => go('next'), e.target);
+      if ($('#oswap')) $('#oswap').onclick = (e) => guard(async () => { const bl = await api(`/api/tasks/${t.id}/blocked`); if (!bl.blocked) throw new Error('This task can still be done.'); panelBlocked(t, bl.blocked, bl.options); }, e.target);
       return;
     }
     const u = st.unit; const q = st.question;
@@ -1175,7 +1195,7 @@ async function oefenenCard() {
             <summary><b>Hoofdstuk ${c}${cu[0].chapter_title ? ' · ' + esc(cu[0].chapter_title) : ''}</b> <small>${done}/${cu.filter((u) => !['partner', 'website'].includes(u.mode)).length} done</small></summary>
             <table class="oef-table">${cu.map((u) => `<tr class="${closed(u) ? 'done' : ''}${u.id === ov.next ? ' next' : ''}">
               <td>${esc(u.section)}</td><td>${u.mode === 'partner' ? '👥 ' : u.mode === 'website' ? '🌐 ' : ''}${u.audio ? '🎧 ' : ''}${esc(u.title)} <small class="muted">p. ${esc(u.pages.join('–'))}${u.read.length ? ' · rules ' + u.read.map(pagesLabel).join(', ') : ''}</small></td>
-              <td>${esc(STATUS_LABEL[u.status] ?? u.status)}${u.total ? ` <small>${u.correct}/${u.total}</small>` : ''}${u.seconds ? ` <small class="muted">${Math.round(u.seconds / 60)} min</small>` : ''}</td>
+              <td>${u.needs_claude && ov.claude && !ov.claude.ok && u.status === 'open' ? '<span class="muted" title="Needs Claude; waits until the key works">⏸ needs Claude</span> ' : ''}${esc(STATUS_LABEL[u.status] ?? u.status)}${u.total ? ` <small>${u.correct}/${u.total}</small>` : ''}${u.seconds ? ` <small class="muted">${Math.round(u.seconds / 60)} min</small>` : ''}</td>
               <td class="row" style="justify-content:flex-end">${!['partner', 'website'].includes(u.mode) ? `<button class="small ghost" data-focus="${esc(u.id)}">Focus here</button>` : ''}
                 ${u.status === 'open' || u.status === 'retry' ? `<button class="small ghost" data-unit="${esc(u.id)}" data-st="unsupported">Not possible</button>` : `<button class="small ghost" data-unit="${esc(u.id)}" data-st="open">Put back</button>`}
                 ${u.audio ? `<label class="small ghost btn" title="${u.has_audio ? 'Replace' : 'Add'} the audio">${u.has_audio ? '🎧 ✓' : '+ audio'}<input type="file" accept="audio/*" data-audio="${esc(u.id)}" hidden></label>` : ''}</td></tr>`).join('')}</table>
@@ -1351,7 +1371,9 @@ async function viewSettings() {
           <input type="password" id="c-key" placeholder="${s.claude_key_set ? '•••••••• (leave empty to keep)' : 'sk-ant-…'}" autocomplete="off">
           <label for="c-model">Model</label><input type="text" id="c-model" value="${esc(s.claude_model)}">
           <p class="hint">Default <code>claude-sonnet-5-5</code>: accurate Dutch at a sensible price. <code>claude-opus-5-5</code> is stronger, <code>claude-haiku-5-5</code> cheaper.</p>
-          <div class="row"><button id="c-save">Save</button>${s.claude_key_set ? '<button class="danger" id="c-clear">Remove key</button>' : ''}</div>
+          ${s.claude_key_set ? `<p class="${s.claude_status.ok ? 'ok' : 'err'}">${s.claude_status.ok ? '✓ The key works' + (s.claude_status.at ? '' : ' (not tested yet)') : '⚠ ' + esc(s.claude_status.reason)}</p>` : ''}
+          ${s.claude_key_set && !s.claude_status.ok ? '<p class="hint">Until it works, exercises that need Claude wait, and a textbook task that needs it can be swapped for another task.</p>' : ''}
+          <div class="row"><button id="c-save">Save</button>${s.claude_key_set ? '<button class="ghost" id="c-test">Test the key</button><button class="danger" id="c-clear">Remove key</button>' : ''}</div>
         </div>
         <div class="card">
           <h2>Anki</h2>
@@ -1436,6 +1458,7 @@ async function viewSettings() {
     </div>`;
 
   const save = (body, msg = 'Saved.') => post('/api/settings', body).then(() => toast(msg));
+  if ($('#c-test')) $('#c-test').onclick = (e) => guard(async () => { const r = await post('/api/claude/test'); toast(r.ok ? 'The key works.' : (r.error || r.reason), !r.ok); viewSettings(); }, e.target);
   $('#c-save').onclick = (e) => guard(async () => { await save({ claude_api_key: $('#c-key').value.trim(), claude_model: $('#c-model').value.trim() }); viewSettings(); }, e.target);
   if ($('#c-clear')) $('#c-clear').onclick = (e) => guard(async () => { await post('/api/settings/clear_claude_key'); viewSettings(); }, e.target);
   $('#a-pick').onchange = () => { const v = $('#a-pick').value; $('#a-path').hidden = v !== '__custom'; if (v !== '__custom') $('#a-path').value = v; };

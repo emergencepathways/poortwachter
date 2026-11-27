@@ -268,6 +268,64 @@ def extract_pages(path, pdf_pages):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- the Claude API (the owner's own key)
+
+# Errors that won't fix themselves: Claude-graded work is "not possible right now" until the owner fixes the key or
+# its credit. Rate limits and overload (429, 5xx) are temporary and don't count.
+BLOCKING = {400: "credit", 401: "key", 403: "permission"}
+
+
+def claude_status():
+    """{"ok": bool, "reason": str, "kind": none|credit|key|permission|unknown, "at": ts}"""
+    if not db.get_setting("claude_api_key"):
+        return {"ok": False, "kind": "none", "reason": "No Claude API key yet (Settings → Claude)."}
+    st = db.get_setting("claude_status") or {}
+    return {"ok": st.get("ok", True), "kind": st.get("kind", ""), "reason": st.get("reason", ""), "at": st.get("at")}
+
+
+def claude_ok():
+    return claude_status()["ok"]
+
+
+def _note(ok, kind="", reason=""):
+    db.set_setting("claude_status", {"ok": ok, "kind": kind, "reason": reason, "at": time.time()})
+
+
+def claude_call(body, timeout=240):
+    """POST to the Messages API with the owner's key; records whether the key works. Returns the reply's text."""
+    key = db.get_setting("claude_api_key")
+    if not key:
+        raise TextbookError("Add your Claude API key in Settings to have answers graded.")
+    req = urllib.request.Request(API_URL, data=json.dumps(body).encode(), method="POST", headers={
+        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        try:
+            detail = json.loads(detail)["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            detail = detail[:300]
+        kind = BLOCKING.get(e.code)
+        if kind == "credit" and "credit" not in detail.lower() and "billing" not in detail.lower():
+            kind = None  # a 400 that isn't about money is a bad request, not a blocked key
+        if kind:
+            _note(False, kind, f"Claude API {e.code}: {detail}")
+        raise TextbookError(f"Claude API error {e.code}: {detail}") from None
+    except urllib.error.URLError as e:
+        raise TextbookError(f"Couldn't reach the Claude API: {e.reason}") from None
+    _note(True)
+    return "".join(c.get("text", "") for c in data.get("content", []) if c.get("type") == "text")
+
+
+def test_key():
+    """A one-word request (a fraction of a cent) to see whether the key and its credit work again."""
+    claude_call({"model": db.get_setting("claude_model") or "claude-sonnet-5-5", "max_tokens": 5,
+                 "messages": [{"role": "user", "content": "Zeg alleen: ok"}]}, timeout=60)
+    return claude_status()
+
+
 # ---------------------------------------------------------------- grading
 
 MAX_PAGES = 12
@@ -316,8 +374,7 @@ The learner's answers:
 
 def grade(book_id, items, answers, title=""):
     """items: [{label, page_from, page_to}] with printed page numbers."""
-    key = db.get_setting("claude_api_key")
-    if not key:
+    if not db.get_setting("claude_api_key"):
         raise TextbookError("Add your Claude API key in Settings to have answers graded.")
     b = book(book_id)
     if not b:
@@ -349,22 +406,7 @@ def grade(book_id, items, answers, title=""):
             ],
         }],
     }
-    req = urllib.request.Request(API_URL, data=json.dumps(body).encode(), method="POST", headers={
-        "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=240) as resp:
-            data = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")
-        try:
-            detail = json.loads(detail)["error"]["message"]
-        except (ValueError, KeyError, TypeError):
-            detail = detail[:300]
-        raise TextbookError(f"Claude API error {e.code}: {detail}") from None
-    except urllib.error.URLError as e:
-        raise TextbookError(f"Couldn't reach the Claude API: {e.reason}") from None
-    text = "".join(c.get("text", "") for c in data.get("content", []) if c.get("type") == "text")
-    return parse_result(text)
+    return parse_result(claude_call(body))
 
 
 def parse_result(text):

@@ -37,7 +37,9 @@ A personal Linux Mint app that keeps Steam closed until the owner's daily Dutch 
   asks where to continue, focus never loses the book's place. Default plan: textbook + BW reading weekdays, Anki
   daily except 30 BW cards Wed + Sat, BW diary every other day. Ramp: +5 min/weekday after 7 in a row, max 120,
   weekends 45 and not counted. A past day the computer was never on (no roster, or one never frozen on the day)
-  is paused like a free day; setting `offline_days` = "missed" counts it as missed.
+  is paused like a free day; setting `offline_days` = "missed" counts it as missed. When the Claude key fails for
+  good (400 credit, 401, 403; textbook.claude_call records it), Claude-only exercises wait and a textbook task that
+  can't be done may be swapped (actions.replace_blocked) for another activity of about the same length, never fewer.
   Change them only when she asks, and update tests + CHANGELOG together.
 - The repo is public: never commit the textbook, sets files or exercise banks built from it, its audio, recordings,
   databases or keys (see .gitignore). Tests use invented exercises (tests/test_v4.py).

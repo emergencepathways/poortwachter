@@ -221,6 +221,68 @@ def recordings(limit=60):
         "ORDER BY r.ts DESC LIMIT ?", (limit,))]
 
 
+# ---------------------------------------------------------------- tasks that can't be done right now
+
+
+def blocked(task_id):
+    """Why today's task can't be done right now (and may be replaced), or None. For now: textbook work that needs
+    Claude while the key or its credit doesn't work, or a textbook with nothing left to serve."""
+    from . import oefenen
+    t = roster.task(task_id)
+    if not t or t["kind"] != "textbook" or t["status"] == "done":
+        return None
+    bid = t["params"].get("textbook_id") or db.get_setting("active_textbook")
+    st = textbook.claude_status()
+    if bid and oefenen.has_bank(bid):
+        prog = t["progress"]
+        if prog.get("unit") or oefenen._next_unit(int(bid), set(prog.get("skipped", []))):
+            return None
+        if not st["ok"]:
+            return "The exercises left in your book need Claude to check them, and Claude isn't working: " + st["reason"]
+        return "There are no exercises left to do in your book."
+    if not st["ok"]:
+        return "Textbook grading needs Claude, and it isn't working: " + st["reason"]
+    return None
+
+
+def replacements(task_id):
+    t = roster.task(task_id)
+    if not t:
+        raise ActionError("No such task.")
+    on_day = {x["activity_id"] for x in roster.tasks_for(t["day"])}
+    acts = [a for a in roster.activities(enabled_only=True)
+            if a["kind"] != "textbook" and a["id"] not in on_day]
+    close = [a for a in acts if a["est_min"] >= t["est_min"] - 5]
+    return close or acts
+
+
+def replace_blocked(task_id, activity_id=None):
+    """Swap a task that can't be done right now for another activity (chosen, or drawn at random). The new task is
+    at least as long when possible, so today doesn't get lighter."""
+    t = _today_task(task_id)
+    reason = blocked(task_id)
+    if not reason:
+        raise ActionError("This task can be done, so it can't be replaced.")
+    options = replacements(task_id)
+    if not options:
+        raise ActionError("There's nothing to replace it with.")
+    if activity_id:
+        a = next((x for x in options if x["id"] == int(activity_id)), None)
+        if not a:
+            raise ActionError("That activity can't replace it (already on today's list, or too short).")
+    else:
+        a = random.choices(options, weights=[max(x["weight"], 0.1) for x in options])[0]
+    import json
+    db.connect().execute(
+        "UPDATE tasks SET activity_id=?, name=?, category=?, kind=?, params=?, est_min=?, progress=?, mystery=0 "
+        "WHERE id=?",
+        (a["id"], a["name"], a["category"], a["kind"], json.dumps(a["params"]),
+         max(a["est_min"], t["est_min"]) if a["kind"] != "timer" else a["est_min"],
+         json.dumps({"replaced": t["name"], "reason": reason}), task_id))
+    db.log("replaced", f"{t['day']}: {t['name']} → {a['name']} ({reason[:120]})")
+    return roster.public_task(roster.task(task_id))
+
+
 # ---------------------------------------------------------------- textbook
 
 
