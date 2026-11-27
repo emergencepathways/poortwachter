@@ -355,3 +355,40 @@ class RampTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OfflineDayTests(Base):
+    def setUp(self):
+        super().setUp()
+        from poortwachter import pto
+        importlib.reload(pto)
+        self.pto = pto
+
+    def finish_today(self):
+        r = self.roster
+        r.ensure_roster(r.today())
+        for t in r.tasks_for(r.today()):
+            if t["counts"]:
+                r.complete(t["id"], {})
+
+    def test_a_day_with_the_computer_off_is_paused(self):
+        r = self.roster
+        self.pto._add("2026-11-20", 30, "test")  # 1 day 6 h banked
+        self.finish_today()                       # Wednesday 25th, done
+        r.ensure_roster("2026-11-26")             # planned ahead, but the computer stays off on the 26th
+        self.set_now(dt.datetime(2026, 11, 27, 10, 0))
+        r.ensure_roster(r.today())
+        self.assertEqual(self.pto.balance(), 31, "the 25th earned an hour; the 26th neither earned nor wiped")
+        self.assertEqual({t["source"] for t in r.tasks_for(r.today())} & {"carry"}, set(),
+                         "nothing carries over from a day the computer was off")
+        self.assertGreaterEqual(r.streak(), 1, "the streak pauses")
+        self.assertEqual(next(h for h in r.history() if h["day"] == "2026-11-26")["free"], "offline")
+
+    def test_setting_counts_it_as_missed(self):
+        r = self.roster
+        self.db.set_setting("offline_days", "missed")
+        self.pto._add("2026-11-20", 30, "test")
+        self.finish_today()
+        self.set_now(dt.datetime(2026, 11, 27, 10, 0))
+        r.ensure_roster(r.today())
+        self.assertEqual(self.pto.balance(), 24, "the 26th was missed: the partial hours went")

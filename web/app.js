@@ -1304,8 +1304,8 @@ async function viewHistory() {
   $('#view').innerHTML = `
     <div class="section-title"><h1>History</h1><span class="muted">Emergency keys used in the last 30 days: <b>${S.state.emergency_30d}</b></span></div>
     <div class="card"><h2>Last 3 weeks</h2>
-      <div class="heat">${H.map((h) => `<div class="${h.free ? 'free' : h.complete ? 'full' : h.done ? 'part' : ''} ${h.emergency ? 'em' : ''}" title="${h.emergency ? 'emergency key used' : h.free ? 'free day' : ''}">
-        <b>${h.free ? '🏖️' : `${h.done}/${h.total}`}</b>${esc(dayNl(h.day).slice(0, 2))} ${esc(h.day.slice(5))}</div>`).join('')}</div>
+      <div class="heat">${H.map((h) => `<div class="${h.free ? 'free' : h.complete ? 'full' : h.done ? 'part' : ''} ${h.emergency ? 'em' : ''}" title="${h.emergency ? 'emergency key used' : h.free === 'offline' ? 'computer off: paused' : h.free ? 'free day' : ''}">
+        <b>${h.free === 'offline' ? '⏸' : h.free ? '🏖️' : `${h.done}/${h.total}`}</b>${esc(dayNl(h.day).slice(0, 2))} ${esc(h.day.slice(5))}</div>`).join('')}</div>
       <p class="hint">Green = all done · orange = partly · blue 🏖️ = free day · dashed red = emergency key.</p></div>
     <div class="grid2">
       <div class="card"><h2>🗣️ Recordings</h2>
@@ -1337,6 +1337,8 @@ async function viewSettings() {
           <label class="inline" style="margin-top:10px"><input type="checkbox" id="tb-hard" ${s.textbook_hardcore ? 'checked' : ''}> Hardcore: an exercise only counts at 70% or more (below that it comes back later)</label>
           <label class="inline" style="margin-top:10px"><input type="checkbox" id="ramp-on" ${(s.ramp || {}).enabled ? 'checked' : ''}> Raise weekday study time: +5 minutes for every completed weekday after 7 in a row, up to 120 minutes (weekends stay at 45)</label>
           ${(s.ramp || {}).enabled ? `<p class="hint">Now: +${(s.ramp_state || {}).bonus || 0} min on weekdays · ${(s.ramp_state || {}).streak || 0} weekdays in a row. A missed weekday restarts the count; the minutes you reached stay.</p>` : ''}
+          <label for="off-days" style="margin-top:10px">A day the computer stays off</label>
+          <select id="off-days"><option value="pause" ${s.offline_days !== 'missed' ? 'selected' : ''}>Pause it, like a free day (nothing earned or lost)</option><option value="missed" ${s.offline_days === 'missed' ? 'selected' : ''}>Count it as missed</option></select>
           <div class="row" style="margin-top:10px"><button id="st-save">Save</button></div>
           <hr>
           <p class="muted">Recommended plan: every weekday the textbook and Boekenwurm reading; Anki as the daily review, except a set of 30 Boekenwurm flashcards on Wednesday and Saturday; the Boekenwurm diary every other day.</p>
@@ -1440,7 +1442,7 @@ async function viewSettings() {
   $('#a-save').onclick = (e) => guard(async () => { await save({ anki_collection: $('#a-path').value.trim() }); viewSettings(); }, e.target);
   $('#a-test').onclick = (e) => guard(async () => { const d = await api('/api/anki/decks'); $('#a-out').innerHTML = d.length ? 'Decks: ' + d.map(esc).join(' · ') : 'No decks found.'; }, e.target);
   $('#st-save').onclick = (e) => guard(async () => {
-    await post('/api/settings', { textbook_minutes: Math.max(20, +$('#tb-min').value || 20), textbook_hardcore: $('#tb-hard').checked, ramp: { enabled: $('#ramp-on').checked } });
+    await post('/api/settings', { textbook_minutes: Math.max(20, +$('#tb-min').value || 20), textbook_hardcore: $('#tb-hard').checked, ramp: { enabled: $('#ramp-on').checked }, offline_days: $('#off-days').value });
     toast('Saved. Days from tomorrow follow it.'); viewSettings();
   }, e.target);
   $('#plan-rec').onclick = (e) => guard(async () => {

@@ -319,7 +319,8 @@ DEFAULT_SETTINGS = {
     "ramp": {"enabled": False, "step": 5, "after": 7, "max": 120},
     "ramp_state": {"streak": 0, "bonus": 0, "through": None},
     "writing_every_other_day": [],   # activity ids required on alternate days
-    "whisper": True,                 # check speaking exercises with the local Whisper (if installed)
+    "whisper": True,
+    "offline_days": "pause",         # a day the computer is off all day: "pause" (like a free day) or "missed"                 # check speaking exercises with the local Whisper (if installed)
 }
 
 

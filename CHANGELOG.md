@@ -2,6 +2,10 @@
 
 Releases are git tags (`v2.0.0`). `poortwachter-update` installs the newest one.
 
+## [4.1.0] - 2026-11-27
+
+- **A day the computer stays off is paused**, like a free day: no hour earned, the hours toward your next free day aren't wiped, the streak and the weekday ramp pause, and nothing carries over from it. History shows it as ⏸. Settings → Study time → "A day the computer stays off" can count it as missed instead.
+
 ## [4.0.0] - 2026-11-26
 
 **Oefenen: your textbook, one question at a time** (docs/OEFENEN.md).

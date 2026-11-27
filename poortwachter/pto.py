@@ -71,6 +71,8 @@ def process():
         day = d.isoformat()
         if is_free(day):
             pass  # a free day pauses the chain
+        elif db.get_setting("offline_days") != "missed" and roster.was_offline(day):
+            pass  # the computer was off all day: paused too (setting "offline_days": "pause" | "missed")
         elif _day_complete(day):
             ramp_changed |= roster.settle_ramp(day, True)
             bal = balance()

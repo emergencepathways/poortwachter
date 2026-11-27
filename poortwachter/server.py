@@ -28,7 +28,7 @@ SETTABLE = {"schedule", "claude_api_key", "claude_model", "anki_collection", "bw
             "bw_paragraphs_per_page", "speaking_prompts", "min_fill_minutes", "active_textbook",
             "category_caps", "event_minimum_activity", "plan_days_ahead", "bw_site", "languagetool",
             "ical_feeds", "ical_rules", "textbook_minutes", "textbook_hardcore", "ramp", "whisper",
-            "writing_every_other_day"}
+            "writing_every_other_day", "offline_days"}
 PLAN_KEYS = {"schedule", "min_fill_minutes", "category_caps", "event_minimum_activity", "active_textbook",
              "textbook_minutes", "ramp", "writing_every_other_day"}
 
@@ -123,6 +123,7 @@ def settings_view():
         "speech": speech.status(),
         "writing_every_other_day": db.get_setting("writing_every_other_day"),
         "plan_version": db.get_setting("plan_version"),
+        "offline_days": db.get_setting("offline_days"),
     }
 
 
@@ -592,6 +593,8 @@ def api_settings_save(h, m):
             value = bool(value)
         if key == "ramp":
             value = {"enabled": bool((value or {}).get("enabled")), "step": 5, "after": 7, "max": 120}
+        if key == "offline_days":
+            value = "missed" if value == "missed" else "pause"
         if key == "writing_every_other_day":
             value = [int(i) for i in (value or [])]
         if key == "speaking_prompts":

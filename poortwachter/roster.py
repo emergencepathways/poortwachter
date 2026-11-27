@@ -186,12 +186,19 @@ def _insert_task(t):
     return cur.lastrowid
 
 
-def _previous_work_day(day):
-    """The last earlier day that had a roster and wasn't a free day."""
+def _previous_work_day(day, seen_only=False):
+    """The last earlier day that had a roster and wasn't a free day. seen_only: only days the computer was on (their
+    roster was frozen on the day), for carryover."""
     row = db.connect().execute(
-        "SELECT day FROM rosters WHERE day < ? AND day NOT IN (SELECT day FROM free_days) "
-        "ORDER BY day DESC LIMIT 1", (day,)).fetchone()
+        "SELECT day FROM rosters WHERE day < ? AND day NOT IN (SELECT day FROM free_days)"
+        + (" AND frozen = 1" if seen_only else "") + " ORDER BY day DESC LIMIT 1", (day,)).fetchone()
     return row["day"] if row else None
+
+
+def was_offline(day):
+    """A past day the computer was never on: no roster, or one planned ahead that was never opened on the day."""
+    r = db.connect().execute("SELECT frozen FROM rosters WHERE day = ?", (day,)).fetchone()
+    return day < today() and (r is None or not r["frozen"])
 
 
 def ramp_bonus(weekday):
@@ -338,7 +345,7 @@ def _freeze_with_carryover(day):
             conn.execute("COMMIT")
             return
         _sync_events(day)
-        prev = _previous_work_day(day)
+        prev = _previous_work_day(day, seen_only=True)
         if prev and not pto.is_free(day):
             unfinished = conn.execute(
                 "SELECT * FROM tasks WHERE day = ? AND counts = 1 AND status != 'done' AND source != 'event' "
@@ -642,6 +649,8 @@ def history(days=30):
         unlock = conn.execute("SELECT reason FROM unlocks WHERE day = ?", (r["day"],)).fetchone()
         done = sum(1 for x in rows if x["status"] == "done")
         free = pto.free_source(r["day"])
+        if not free and db.get_setting("offline_days") != "missed" and was_offline(r["day"]):
+            free = "offline"  # the computer was off all day: paused, like a free day
         out.append({"day": r["day"], "done": done, "total": len(rows), "free": free,
                     "complete": done == len(rows) and not free, "emergency": bool(unlock) or free == "emergency"})
     return out

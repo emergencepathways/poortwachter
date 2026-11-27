@@ -36,7 +36,8 @@ A personal Linux Mint app that keeps Steam closed until the owner's daily Dutch 
   2× target = "took long", more work after done to 2× = +1 h PTO once, hardcore = 70%, italki replaces the task and
   asks where to continue, focus never loses the book's place. Default plan: textbook + BW reading weekdays, Anki
   daily except 30 BW cards Wed + Sat, BW diary every other day. Ramp: +5 min/weekday after 7 in a row, max 120,
-  weekends 45 and not counted.
+  weekends 45 and not counted. A past day the computer was never on (no roster, or one never frozen on the day)
+  is paused like a free day; setting `offline_days` = "missed" counts it as missed.
   Change them only when she asks, and update tests + CHANGELOG together.
 - The repo is public: never commit the textbook, sets files or exercise banks built from it, its audio, recordings,
   databases or keys (see .gitignore). Tests use invented exercises (tests/test_v4.py).
